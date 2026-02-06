@@ -584,3 +584,54 @@ class OIDCAccount(user_db.Model):  # type: ignore
     def __repr__(self):
         """Return string representation of instance."""
         return f"<OIDCAccount(provider_id='{self.provider_id}', subject_id='{self.subject_id}', user_id='{self.user_id}')>"
+
+
+class Conversation(user_db.Model):  # type: ignore
+    """Conversation table for AI chat history."""
+
+    __tablename__ = "conversations"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    user_id = mapped_column(
+        GUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tree = mapped_column(sa.String, nullable=False)
+    title = mapped_column(sa.String)
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+    updated_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.Index("idx_conversations_user_tree", "user_id", "tree"),
+        sa.Index("idx_conversations_updated", "updated_at"),
+    )
+
+    def __repr__(self):
+        """Return string representation of instance."""
+        return f"<Conversation(id='{self.id}', title='{self.title}')>"
+
+
+class Message(user_db.Model):  # type: ignore
+    """Message table for AI chat messages."""
+
+    __tablename__ = "messages"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    conversation_id = mapped_column(
+        sa.String(36),
+        sa.ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role = mapped_column(sa.String(10), nullable=False)
+    content = mapped_column(sa.Text, nullable=False)
+    metadata_json = mapped_column(sa.Text, nullable=True)
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.Index("idx_messages_conversation", "conversation_id", "created_at"),
+    )

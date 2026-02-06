@@ -6,18 +6,10 @@ import re
 from typing import Any
 
 from flask import current_app
-from pydantic_ai.exceptions import ModelRetry, UnexpectedModelBehavior
-from pydantic_ai.messages import (
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-    UserPromptPart,
-)
+from google.genai import types
 
 from ..util import abort_with_message, get_logger
-from .agent import create_agent
+from .agent import run_agent
 from .deps import AgentDeps
 
 
@@ -41,59 +33,56 @@ def sanitize_answer(answer: str) -> str:
     return answer
 
 
-def extract_metadata_from_result(result) -> dict[str, Any]:
-    """Extract metadata from AgentRunResult.
+def extract_metadata_from_result(response: types.GenerateContentResponse) -> dict[str, Any]:
+    """Extract metadata from Gemini GenerateContentResponse.
 
     Args:
-        result: AgentRunResult from Pydantic AI
+        response: GenerateContentResponse from Gemini
 
     Returns:
-        Dictionary containing run metadata including tool calls
+        Dictionary containing run metadata including usage info
     """
-    tools_used: list[dict[str, Any]] = []
-    tool_call_map = {}
-    step = 0
+    metadata: dict[str, Any] = {}
 
-    for msg in result.all_messages():
-        if isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, ToolCallPart):
-                    step += 1
-                    tool_call_id = part.tool_call_id
-                    tool_info = {
-                        "step": step,
-                        "name": part.tool_name,
-                        "args": (
-                            part.args_as_dict()
-                            if hasattr(part, "args_as_dict")
-                            else part.args
-                        ),
-                    }
-                    tool_call_map[tool_call_id] = tool_info
-
-        elif isinstance(msg, ModelRequest):
-            # ModelRequest.parts can contain ToolReturnPart among other types
-            for part in msg.parts:  # type: ignore[assignment]
-                if isinstance(part, ToolReturnPart):
-                    tool_call_id = part.tool_call_id
-                    if tool_call_id in tool_call_map:
-                        tools_used.append(tool_call_map[tool_call_id])
-
-    usage = result.usage()
-    metadata = {
-        "run_id": result.run_id,
-        "timestamp": result.timestamp().isoformat(),
-        "usage": {
-            "requests": usage.requests,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "total_tokens": usage.total_tokens,
-            "tool_calls": usage.tool_calls,
-        },
-        "tools_used": tools_used,
-    }
+    if response.usage_metadata:
+        metadata["usage"] = {
+            "input_tokens": response.usage_metadata.prompt_token_count,
+            "output_tokens": response.usage_metadata.candidates_token_count,
+            "total_tokens": response.usage_metadata.total_token_count,
+        }
 
     return metadata
+
+
+def _convert_history_to_gemini(history: list[dict]) -> list[types.Content]:
+    """Convert client-sent history to Gemini Content objects.
+
+    Args:
+        history: List of dicts with 'role' and 'message' keys
+
+    Returns:
+        List of Gemini Content objects
+    """
+    contents: list[types.Content] = []
+    for message in history:
+        if "role" not in message or "message" not in message:
+            raise ValueError(f"Invalid message format: {message}")
+        role = message["role"].lower()
+        if role in ["ai", "system", "assistant", "model"]:
+            contents.append(
+                types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text=message["message"])],
+                )
+            )
+        elif role != "error":  # skip error messages
+            contents.append(
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=message["message"])],
+                )
+            )
+    return contents
 
 
 def answer_with_agent(
@@ -103,7 +92,7 @@ def answer_with_agent(
     user_id: str,
     history: list | None = None,
 ):
-    """Answer a prompt using Pydantic AI agent.
+    """Answer a prompt using the Gemini agent.
 
     Args:
         prompt: The user's question/prompt
@@ -113,25 +102,17 @@ def answer_with_agent(
         history: Optional chat history
 
     Returns:
-        AgentRunResult containing the response and metadata
+        GenerateContentResponse from Gemini
     """
     logger = get_logger()
 
-    # Get configuration
     config = current_app.config
     model_name = config.get("LLM_MODEL")
-    base_url = config.get("LLM_BASE_URL")
     max_context_length = config.get("LLM_MAX_CONTEXT_LENGTH", 50000)
     system_prompt_override = config.get("LLM_SYSTEM_PROMPT")
 
     if not model_name:
         raise ValueError("No LLM model specified")
-
-    agent = create_agent(
-        model_name=model_name,
-        base_url=base_url,
-        system_prompt_override=system_prompt_override,
-    )
 
     deps = AgentDeps(
         tree=tree,
@@ -140,31 +121,29 @@ def answer_with_agent(
         user_id=user_id,
     )
 
-    message_history: list[ModelRequest | ModelResponse] = []
+    gemini_history: list[types.Content] = []
     if history:
-        for message in history:
-            if "role" not in message or "message" not in message:
-                raise ValueError(f"Invalid message format: {message}")
-            role = message["role"].lower()
-            if role in ["ai", "system", "assistant"]:
-                message_history.append(
-                    ModelResponse(
-                        parts=[TextPart(content=message["message"])],
-                    )
-                )
-            elif role != "error":  # skip error messages
-                message_history.append(
-                    ModelRequest(parts=[UserPromptPart(content=message["message"])])
-                )
+        gemini_history = _convert_history_to_gemini(history)
 
     try:
-        logger.debug("Running Pydantic AI agent with prompt: '%s'", prompt)
-        result = agent.run_sync(prompt, deps=deps, message_history=message_history)
-        logger.debug("Agent response: '%s'", result.response.text or "")
-        return result
-    except (UnexpectedModelBehavior, ModelRetry) as e:
-        logger.error("Pydantic AI error: %s", e)
+        logger.debug("Running Gemini agent with prompt: '%s'", prompt)
+        response = run_agent(
+            prompt=prompt,
+            deps=deps,
+            model_name=model_name,
+            system_prompt_override=system_prompt_override,
+            history=gemini_history,
+        )
+        response_text = ""
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.text:
+                    response_text += part.text
+        logger.debug("Gemini response: '%s'", response_text[:200] if response_text else "")
+        return response
+    except ValueError as e:
+        logger.error("Gemini configuration error: %s", e)
         abort_with_message(500, "Error communicating with the AI model")
     except Exception as e:
-        logger.error("Unexpected error in agent: %s", e)
+        logger.error("Unexpected error in Gemini agent: %s", e)
         abort_with_message(500, "Unexpected error.")

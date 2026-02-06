@@ -17,13 +17,15 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 
-"""Pydantic AI agent for LLM interactions."""
+"""Gemini agent for LLM interactions."""
 
 from __future__ import annotations
 
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.openai import OpenAIProvider
+import os
+from typing import Any
+
+from google import genai
+from google.genai import types
 
 from .deps import AgentDeps
 from .tools import (
@@ -84,47 +86,325 @@ If you don't have enough information after using the tools, say "I don't know" o
 Keep your answers concise and accurate."""
 
 
-def create_agent(
-    model_name: str,
-    base_url: str | None = None,
-    system_prompt_override: str | None = None,
-) -> Agent[AgentDeps, str]:
-    """Create a Pydantic AI agent with the specified model.
+class _ToolContext:
+    """Minimal context object that mimics RunContext[AgentDeps] for tool calls.
+
+    The existing tools in tools.py expect ctx.deps to hold an AgentDeps instance.
+    This wrapper provides that interface without depending on pydantic_ai.
+    """
+
+    def __init__(self, deps: AgentDeps):
+        self.deps = deps
+
+
+def _make_tool_wrappers(deps: AgentDeps) -> list[types.FunctionDeclaration]:
+    """Create Gemini function declarations that wrap the existing tools.
+
+    Returns a list of FunctionDeclaration objects for Gemini's function calling.
+    The actual tool execution is handled separately in execute_tool_call().
+    """
+    return [
+        types.FunctionDeclaration(
+            name="get_current_date",
+            description="Returns today's date in ISO format (YYYY-MM-DD).",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={},
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="search_genealogy_database",
+            description=(
+                "Searches the user's family tree using semantic similarity. "
+                "Returns formatted genealogical data including people, families, "
+                "events, places, sources, citations, repositories, notes, and "
+                "media matching the query."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="Search query for genealogical information",
+                    ),
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum results to return (default: 20, max: 50)",
+                    ),
+                },
+                required=["query"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="filter_people",
+            description=(
+                "Filters people in the family tree based on criteria. "
+                "IMPORTANT: When filtering by relationships (ancestor_of, descendant_of, "
+                "degrees_of_separation_from), ALWAYS set show_relation_with to the same "
+                "Gramps ID to get relationship labels in results. "
+                "Examples: Find parents with labels: ancestor_of='I0044', ancestor_generations=1, "
+                "show_relation_with='I0044'. Find siblings: degrees_of_separation_from='I0044', "
+                "degrees_of_separation=2, show_relation_with='I0044'."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "given_name": types.Schema(
+                        type=types.Type.STRING,
+                        description="Given/first name to search for (partial match)",
+                    ),
+                    "surname": types.Schema(
+                        type=types.Type.STRING,
+                        description="Surname/last name to search for (partial match)",
+                    ),
+                    "birth_year_before": types.Schema(
+                        type=types.Type.STRING,
+                        description="Year before which people were born (e.g., '1900')",
+                    ),
+                    "birth_year_after": types.Schema(
+                        type=types.Type.STRING,
+                        description="Year after which people were born (e.g., '1850')",
+                    ),
+                    "birth_place": types.Schema(
+                        type=types.Type.STRING,
+                        description="Place name where person was born (partial match)",
+                    ),
+                    "death_year_before": types.Schema(
+                        type=types.Type.STRING,
+                        description="Year before which people died (e.g., '1950')",
+                    ),
+                    "death_year_after": types.Schema(
+                        type=types.Type.STRING,
+                        description="Year after which people died (e.g., '1800')",
+                    ),
+                    "death_place": types.Schema(
+                        type=types.Type.STRING,
+                        description="Place name where person died (partial match)",
+                    ),
+                    "ancestor_of": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of person to find ancestors of (e.g., 'I0044')",
+                    ),
+                    "ancestor_generations": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum generations to search for ancestors (default: 10)",
+                    ),
+                    "descendant_of": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of person to find descendants of (e.g., 'I0044')",
+                    ),
+                    "descendant_generations": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum generations to search for descendants (default: 10)",
+                    ),
+                    "is_male": types.Schema(
+                        type=types.Type.BOOLEAN,
+                        description="Filter to only males",
+                    ),
+                    "is_female": types.Schema(
+                        type=types.Type.BOOLEAN,
+                        description="Filter to only females",
+                    ),
+                    "probably_alive_on_date": types.Schema(
+                        type=types.Type.STRING,
+                        description="Date to check if person was likely alive (YYYY-MM-DD)",
+                    ),
+                    "has_common_ancestor_with": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID to find people sharing an ancestor",
+                    ),
+                    "degrees_of_separation_from": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Gramps ID of person to find relatives connected to. "
+                            "Each parent-child or spousal connection counts as 1. "
+                            "Examples: sibling=2, grandparent=2, uncle=3, first cousin=4"
+                        ),
+                    ),
+                    "degrees_of_separation": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum relationship path length (default: 2)",
+                    ),
+                    "combine_filters": types.Schema(
+                        type=types.Type.STRING,
+                        description="How to combine multiple filters: 'and' (default) or 'or'",
+                    ),
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum results to return (default: 50, max: 100)",
+                    ),
+                    "show_relation_with": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Gramps ID of person to show relationships relative to. "
+                            "ALWAYS use this with relationship filters to get labels like [father], [sibling]."
+                        ),
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="filter_events",
+            description=(
+                "Filter events in the genealogy database. Events are occurrences in "
+                "people's lives (births, deaths, marriages, etc.) or general historical events."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "event_type": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Type of event (e.g., 'Birth', 'Death', 'Marriage', "
+                            "'Baptism', 'Census', 'Emigration', 'Burial', 'Occupation', 'Residence')"
+                        ),
+                    ),
+                    "date_before": types.Schema(
+                        type=types.Type.STRING,
+                        description="Latest year to include (e.g., '1900'). Use only the year.",
+                    ),
+                    "date_after": types.Schema(
+                        type=types.Type.STRING,
+                        description="Earliest year to include (e.g., '1850'). Use only the year.",
+                    ),
+                    "place": types.Schema(
+                        type=types.Type.STRING,
+                        description="Location name to search for (e.g., 'Boston', 'Massachusetts')",
+                    ),
+                    "description_contains": types.Schema(
+                        type=types.Type.STRING,
+                        description="Text that should appear in the event description",
+                    ),
+                    "participant_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of a person who participated in the event (e.g., 'I0001')",
+                    ),
+                    "participant_role": types.Schema(
+                        type=types.Type.STRING,
+                        description="Role of the participant (e.g., 'Primary', 'Family')",
+                    ),
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum number of results to return (1-100, default 50)",
+                    ),
+                },
+            ),
+        ),
+    ]
+
+
+def execute_tool_call(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    deps: AgentDeps,
+) -> str:
+    """Execute a tool call by dispatching to the appropriate tool function.
 
     Args:
-        model_name: The name of the LLM model to use. If it contains a colon (e.g.,
-            "mistral:mistral-large-latest" or "openai:gpt-4"), it will be treated
-            as a provider-prefixed model name and Pydantic AI will handle provider
-            detection automatically. Otherwise, it will be treated as an OpenAI
-            compatible model name.
-        base_url: Optional base URL for the OpenAI-compatible API (ignored if
-            model_name contains a provider prefix)
-        system_prompt_override: Optional override for the system prompt
+        tool_name: Name of the tool to call
+        tool_args: Arguments for the tool
+        deps: Agent dependencies (tree, privacy settings, etc.)
 
     Returns:
-        A configured Pydantic AI agent
+        Tool result as a string
     """
-    # If model name has a provider prefix (e.g., "mistral:model-name"),
-    # let Pydantic AI handle provider detection automatically
-    if ":" in model_name:
-        model: str | OpenAIChatModel = model_name
+    ctx = _ToolContext(deps)
+
+    if tool_name == "get_current_date":
+        return get_current_date(ctx)
+    elif tool_name == "search_genealogy_database":
+        return search_genealogy_database(ctx, **tool_args)
+    elif tool_name == "filter_people":
+        return filter_people(ctx, **tool_args)
+    elif tool_name == "filter_events":
+        return filter_events(ctx, **tool_args)
     else:
-        # Otherwise, use OpenAI-compatible provider with optional base_url
-        provider = OpenAIProvider(base_url=base_url)
-        model = OpenAIChatModel(
-            model_name,
-            provider=provider,
-        )
+        return f"Unknown tool: {tool_name}"
+
+
+def run_agent(
+    prompt: str,
+    deps: AgentDeps,
+    model_name: str,
+    system_prompt_override: str | None = None,
+    history: list[types.Content] | None = None,
+) -> types.GenerateContentResponse:
+    """Run the Gemini agent with tool calling loop.
+
+    Sends the prompt to Gemini, handles tool calls by executing them against
+    the Gramps database, and returns the final response.
+
+    Args:
+        prompt: The user's question/prompt
+        deps: Agent dependencies (tree, privacy, context length, user_id)
+        model_name: The Gemini model name (e.g., "gemini-3-flash")
+        system_prompt_override: Optional override for the system prompt
+        history: Optional conversation history as Gemini Content objects
+
+    Returns:
+        The final GenerateContentResponse from Gemini
+    """
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY environment variable is not set")
+
+    client = genai.Client(api_key=api_key)
 
     system_prompt = system_prompt_override or SYSTEM_PROMPT
+    tool_declarations = _make_tool_wrappers(deps)
 
-    agent = Agent(
-        model,
-        deps_type=AgentDeps,
-        system_prompt=system_prompt,
+    contents: list[types.Content] = []
+    if history:
+        contents.extend(history)
+
+    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        tools=[types.Tool(function_declarations=tool_declarations)],
+        temperature=0.2,
     )
-    agent.tool(get_current_date)
-    agent.tool(search_genealogy_database)
-    agent.tool(filter_people)
-    agent.tool(filter_events)
-    return agent
+
+    max_iterations = 10
+    for _ in range(max_iterations):
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
+
+        # Check if the model wants to call tools
+        if not response.candidates or not response.candidates[0].content.parts:
+            break
+
+        has_function_call = any(
+            part.function_call is not None
+            for part in response.candidates[0].content.parts
+        )
+
+        if not has_function_call:
+            break
+
+        # Add the model's response (with function calls) to history
+        contents.append(response.candidates[0].content)
+
+        # Execute each function call and collect results
+        function_response_parts = []
+        for part in response.candidates[0].content.parts:
+            if part.function_call is not None:
+                tool_name = part.function_call.name
+                tool_args = dict(part.function_call.args) if part.function_call.args else {}
+
+                result = execute_tool_call(tool_name, tool_args, deps)
+
+                function_response_parts.append(
+                    types.Part.from_function_response(
+                        name=tool_name,
+                        response={"result": result},
+                    )
+                )
+
+        # Add tool results back to the conversation
+        contents.append(types.Content(role="user", parts=function_response_parts))
+
+    return response

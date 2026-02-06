@@ -46,13 +46,14 @@ dependencies = [
     "requests",
     "yclade>=0.5.0",
     "Authlib>=1.6.4",
+    "geopy",
     "gramps-gedcom7",
 ]
 
 [project.optional-dependencies]
-ai = ["sentence-transformers>=4.1.0", "accelerate", "pydantic-ai[openai]>=1.0.0,<2.0.0"]
+ai = ["sentence-transformers>=4.1.0", "accelerate", "google-genai>=1.0.0"]
 test = ["pytest", "PyYAML"]
-all = ["sentence-transformers>=4.1.0", "accelerate", "pydantic-ai[openai]>=1.0.0,<2.0.0", "pytest", "PyYAML"]
+all = ["sentence-transformers>=4.1.0", "accelerate", "google-genai>=1.0.0", "pytest", "PyYAML"]
 
 [project.urls]
 homepage = "https://github.com/gramps-project/gramps-web-api"

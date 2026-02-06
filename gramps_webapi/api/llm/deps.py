@@ -17,14 +17,14 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 
-"""Dependencies for Pydantic AI agent."""
+"""Dependencies for the LLM agent."""
 
 from dataclasses import dataclass
 
 
 @dataclass
 class AgentDeps:
-    """Dependencies for the Pydantic AI agent."""
+    """Dependencies for the LLM agent."""
 
     tree: str
     include_private: bool

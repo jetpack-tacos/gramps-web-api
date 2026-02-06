@@ -33,6 +33,33 @@ from gramps_webapi.auth.const import ROLE_EDITOR, ROLE_OWNER
 TEST_URL = BASE_URL + "/chat/"
 
 
+def _make_mock_gemini_response(text="Pizza of course!", input_tokens=100, output_tokens=50):
+    """Create a mock Gemini GenerateContentResponse."""
+    mock_response = MagicMock()
+
+    # Set up content parts with text
+    mock_text_part = MagicMock()
+    mock_text_part.text = text
+    mock_text_part.function_call = None
+
+    mock_content = MagicMock()
+    mock_content.parts = [mock_text_part]
+
+    mock_candidate = MagicMock()
+    mock_candidate.content = mock_content
+
+    mock_response.candidates = [mock_candidate]
+
+    # Set up usage metadata
+    mock_usage = MagicMock()
+    mock_usage.prompt_token_count = input_tokens
+    mock_usage.candidates_token_count = output_tokens
+    mock_usage.total_token_count = input_tokens + output_tokens
+    mock_response.usage_metadata = mock_usage
+
+    return mock_response
+
+
 class TestChat(unittest.TestCase):
     """Test cases for semantic search."""
 
@@ -70,32 +97,10 @@ class TestChat(unittest.TestCase):
         assert rv.json[0]["object"]["gramps_id"] == "N02"  # Pizza!
         assert rv.json[1]["object"]["gramps_id"] == "N01"
 
-    @patch("gramps_webapi.api.llm.create_agent")
-    def test_chat(self, mock_create_agent):
-        from datetime import datetime
-        from pydantic_ai import RunUsage
+    @patch("gramps_webapi.api.llm.run_agent")
+    def test_chat(self, mock_run_agent):
+        mock_run_agent.return_value = _make_mock_gemini_response()
 
-        # Mock the agent and its response
-        mock_agent = MagicMock()
-        mock_create_agent.return_value = mock_agent
-
-        # Create a proper mock result that matches AgentRunResult API
-        mock_result = MagicMock()
-        mock_result.response.text = "Pizza of course!"
-        mock_result.run_id = "test_run_123"
-        # timestamp() is a method that returns datetime
-        mock_result.timestamp.return_value = datetime.fromisoformat(
-            "2025-12-05T10:00:00+00:00"
-        )
-        # usage() is a method that returns RunUsage
-        mock_usage = RunUsage()
-        mock_usage.requests = 1
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.tool_calls = 0
-        mock_result.usage.return_value = mock_usage
-        mock_result.all_messages.return_value = []
-        mock_agent.run_sync.return_value = mock_result
         header = fetch_header(self.client, empty_db=True)
         header_editor = fetch_header(self.client, empty_db=True, role=ROLE_EDITOR)
         rv = self.client.get("/api/trees/", headers=header)
@@ -119,32 +124,9 @@ class TestChat(unittest.TestCase):
         assert rv.json["response"] == "Pizza of course!"
         assert "metadata" not in rv.json  # Should not include metadata by default
 
-    @patch("gramps_webapi.api.llm.create_agent")
-    def test_chat_background(self, mock_create_agent):
-        from datetime import datetime
-        from pydantic_ai import RunUsage
-
-        # Mock the agent and its response
-        mock_agent = MagicMock()
-        mock_create_agent.return_value = mock_agent
-
-        # Create a proper mock result that matches AgentRunResult API
-        mock_result = MagicMock()
-        mock_result.response.text = "Pizza of course!"
-        mock_result.run_id = "test_run_bg"
-        # timestamp() is a method that returns datetime
-        mock_result.timestamp.return_value = datetime.fromisoformat(
-            "2025-12-05T10:30:00+00:00"
-        )
-        # usage() is a method that returns RunUsage
-        mock_usage = RunUsage()
-        mock_usage.requests = 1
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.tool_calls = 0
-        mock_result.usage.return_value = mock_usage
-        mock_result.all_messages.return_value = []
-        mock_agent.run_sync.return_value = mock_result
+    @patch("gramps_webapi.api.llm.run_agent")
+    def test_chat_background(self, mock_run_agent):
+        mock_run_agent.return_value = _make_mock_gemini_response()
 
         header = fetch_header(self.client, empty_db=True)
 
@@ -171,26 +153,10 @@ class TestChat(unittest.TestCase):
         assert "response" in rv.json
         assert rv.json["response"] == "Pizza of course!"
 
-    @patch("gramps_webapi.api.llm.create_agent")
-    def test_chat_verbose(self, mock_create_agent):
+    @patch("gramps_webapi.api.llm.run_agent")
+    def test_chat_verbose(self, mock_run_agent):
         """Test chat with verbose=true to include metadata."""
-        from pydantic_ai import Agent
-        from dataclasses import dataclass
-
-        # Create a REAL agent with a real tool to get real result structure
-        @dataclass
-        class TestDeps:
-            value: str = "test"
-
-        real_agent = Agent("test", deps_type=TestDeps)
-
-        @real_agent.tool
-        def search_genealogy_database(ctx, query: str, max_results: int = 20) -> str:
-            """Mock search tool."""
-            return f"Found results for {query}"
-
-        # Mock create_agent to return our real agent
-        mock_create_agent.return_value = real_agent
+        mock_run_agent.return_value = _make_mock_gemini_response()
 
         header = fetch_header(self.client, empty_db=True)
 
@@ -212,24 +178,12 @@ class TestChat(unittest.TestCase):
         )
         assert rv.status_code == 200
         assert "response" in rv.json
-        # The real agent will produce some response
         assert isinstance(rv.json["response"], str)
         assert len(rv.json["response"]) > 0
 
         # Check metadata is included
         assert "metadata" in rv.json
         metadata = rv.json["metadata"]
-        assert "run_id" in metadata
-        assert isinstance(metadata["run_id"], str)
-        assert "timestamp" in metadata
         assert "usage" in metadata
-        assert isinstance(metadata["usage"]["requests"], int)
-        assert metadata["usage"]["requests"] >= 1
+        assert isinstance(metadata["usage"]["input_tokens"], int)
         assert isinstance(metadata["usage"]["total_tokens"], int)
-        assert "tools_used" in metadata
-        assert isinstance(metadata["tools_used"], list)
-        # The agent will call the search tool
-        if len(metadata["tools_used"]) > 0:
-            assert metadata["tools_used"][0]["name"] == "search_genealogy_database"
-            assert "step" in metadata["tools_used"][0]
-            assert "args" in metadata["tools_used"][0]

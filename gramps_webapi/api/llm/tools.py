@@ -17,16 +17,22 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 
-"""Pydantic AI tools for LLM interactions."""
+"""Tools for LLM interactions."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
 from functools import wraps
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
-from pydantic_ai import RunContext
+T = TypeVar("T")
+
+
+class RunContext(Protocol[T]):
+    """Minimal protocol matching the context interface expected by tools."""
+
+    deps: T
 
 from ..resources.filters import apply_filter
 from ..resources.util import get_one_relationship

@@ -80,7 +80,13 @@ def run_task(task: Task, **kwargs) -> Union[AsyncResult, Any]:
                 return task(**kwargs)
             except Exception as exc:
                 abort_with_message(500, str(exc))
-    return task.delay(**kwargs)
+    try:
+        return task.delay(**kwargs)
+    except Exception as exc:
+        import traceback
+        with open('/app/media/debug.log', 'a') as f:
+            f.write(f"ERROR in run_task: {str(exc)}\n{traceback.format_exc()}\n")
+        raise exc
 
 
 def make_task_response(task: AsyncResult):
@@ -648,6 +654,7 @@ def process_chat(
     include_private: bool,
     history: list | None = None,
     verbose: bool = False,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     """Process a chat query with the AI agent."""
     # import here to avoid error if AI dependencies are not installed
@@ -656,8 +663,32 @@ def process_chat(
         extract_metadata_from_result,
         sanitize_answer,
     )
+    from gramps_webapi.api.resources.conversations import (
+        add_message,
+        auto_title,
+        cleanup_old_conversations,
+        create_conversation,
+        get_conversation_history,
+    )
 
-    result = answer_with_agent(
+    # If conversation_id provided, load history from DB instead of client
+    if conversation_id:
+        history = get_conversation_history(conversation_id)
+    elif conversation_id is None:
+        # Create a new conversation
+        conv = create_conversation(
+            user_id=user_id,
+            tree=tree,
+            title=auto_title(query),
+        )
+        conversation_id = conv.id
+        cleanup_old_conversations(user_id, tree)
+
+    # Save the user message
+    if conversation_id:
+        add_message(conversation_id, role="user", content=query)
+
+    response = answer_with_agent(
         prompt=query,
         tree=tree,
         include_private=include_private,
@@ -665,10 +696,34 @@ def process_chat(
         history=history,
     )
 
-    response_text = sanitize_answer(result.response.text or "")
-    response_dict: dict[str, Any] = {"response": response_text}
+    # Extract text from Gemini response
+    response_text = ""
+    if response.candidates and response.candidates[0].content.parts:
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                response_text += part.text
 
+    response_text = sanitize_answer(response_text)
+
+    # Save the assistant message
+    metadata = None
     if verbose:
-        response_dict["metadata"] = extract_metadata_from_result(result)
+        metadata = extract_metadata_from_result(response)
+
+    if conversation_id:
+        add_message(
+            conversation_id,
+            role="assistant",
+            content=response_text,
+            metadata=metadata,
+        )
+
+    response_dict: dict[str, Any] = {
+        "response": response_text,
+        "conversation_id": conversation_id,
+    }
+
+    if verbose and metadata:
+        response_dict["metadata"] = metadata
 
     return response_dict

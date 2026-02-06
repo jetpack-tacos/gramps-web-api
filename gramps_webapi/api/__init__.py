@@ -35,8 +35,10 @@ from .resources.bookmarks import (
     BookmarksResource,
 )
 from .resources.chat import ChatResource
+from .resources.conversations import ConversationsResource, ConversationResource
 from .resources.citations import CitationResource, CitationsResource
 from .resources.config import ConfigResource, ConfigsResource
+from .resources.default_person import DefaultPersonResource
 from .resources.dna import DnaMatchParserResource, PersonDnaMatchesResource
 from .resources.events import EventResource, EventSpanResource, EventsResource
 from .resources.export_media import MediaArchiveFileResource, MediaArchiveResource
@@ -73,6 +75,7 @@ from .resources.objects import CreateObjectsResource, DeleteObjectsResource
 from .resources.ocr import MediaOcrResource
 from .resources.people import PeopleResource, PersonResource
 from .resources.places import PlaceResource, PlacesResource
+from .resources.geocode import GeocodeResource
 from .resources.relations import RelationResource, RelationsResource
 from .resources.reports import (
     ReportFileResource,
@@ -211,6 +214,8 @@ register_endpt(TimelineFamiliesResource, "/timelines/families/", "timeline-famil
 # Places
 register_endpt(PlaceResource, "/places/<string:handle>", "place")
 register_endpt(PlacesResource, "/places/", "places")
+# Geocoding
+register_endpt(GeocodeResource, "/places/geocode/", "geocode")
 # Citations
 register_endpt(CitationResource, "/citations/<string:handle>", "citation")
 register_endpt(CitationsResource, "/citations/", "citations")
@@ -370,6 +375,17 @@ register_endpt(SearchIndexResource, "/search/index/", "search_index")
 
 # Chat
 register_endpt(ChatResource, "/chat/", "chat")
+
+# Conversations
+register_endpt(ConversationsResource, "/conversations/", "conversations")
+register_endpt(
+    ConversationResource,
+    "/conversations/<string:conversation_id>/",
+    "conversation",
+)
+
+# Default Person
+register_endpt(DefaultPersonResource, "/default-person/", "default_person")
 
 # Config
 register_endpt(

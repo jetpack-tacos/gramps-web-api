@@ -47,6 +47,9 @@ class ChatResource(ProtectedResource):
     @use_args(
         {
             "query": fields.Str(required=True),
+            "conversation_id": fields.Str(
+                load_default=None, allow_none=True
+            ),
             "history": fields.List(fields.Nested(ChatMessageSchema), required=False),
         },
         location="json",
@@ -65,6 +68,7 @@ class ChatResource(ProtectedResource):
         tree = get_tree_from_jwt_or_fail()
         user_id = get_jwt_identity()
         include_private = has_permissions({PERM_VIEW_PRIVATE})
+        conversation_id = args_json.get("conversation_id")
 
         if args_query["background"]:
             task = run_task(
@@ -75,6 +79,7 @@ class ChatResource(ProtectedResource):
                 include_private=include_private,
                 history=args_json.get("history"),
                 verbose=args_query["verbose"],
+                conversation_id=conversation_id,
             )
             if isinstance(task, AsyncResult):
                 return make_task_response(task)
@@ -89,6 +94,7 @@ class ChatResource(ProtectedResource):
                 include_private=include_private,
                 history=args_json.get("history"),
                 verbose=args_query["verbose"],
+                conversation_id=conversation_id,
             )
         except ValueError:
             abort_with_message(422, "Invalid message format")
