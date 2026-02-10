@@ -341,7 +341,16 @@ class InsightResource(ProtectedResource):
         ).first()
 
         if not insight:
+            get_logger().info(
+                "No insight found for %s (handle=%s, tree=%s)",
+                gramps_id, person_handle, tree
+            )
             abort_with_message(404, "No insight found for this person")
+
+        get_logger().info(
+            "Found insight for %s: id=%s, content_length=%d",
+            gramps_id, insight.id, len(insight.content) if insight.content else 0
+        )
 
         return {
             "data": {
@@ -424,7 +433,7 @@ class InsightResource(ProtectedResource):
         user_db.session.commit()
         update_usage_ai(new=1)
 
-        return {
+        response_data = {
             "data": {
                 "id": insight_id,
                 "person_handle": person_handle,
@@ -433,4 +442,11 @@ class InsightResource(ProtectedResource):
                 "model": model_name,
                 "created_at": datetime.utcnow().isoformat(),
             }
-        }, 200
+        }
+
+        get_logger().info(
+            "Returning insight for %s: id=%s, content_length=%d",
+            gramps_id, insight_id, len(insight_text)
+        )
+
+        return response_data, 200

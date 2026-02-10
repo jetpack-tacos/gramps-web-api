@@ -26,6 +26,7 @@ from typing import Any
 
 from google import genai
 from google.genai import types
+from google.genai.types import GoogleSearch, Tool
 
 from .deps import AgentDeps
 from .tools import (
@@ -47,6 +48,17 @@ Base your answers ONLY on information returned by the tools. Do NOT make up fact
 Think carefully about what the user is asking before choosing which tool and parameters to use.
 
 If the user refers to themselves ("I", "my", "me"), ask for their name in the family tree to look them up.
+
+
+WEB RESEARCH GUIDELINES
+
+When the user asks about historical context, living conditions, occupations, immigration patterns, or "what was life like" questions, use Google Search to find relevant historical information.
+
+Always combine database facts with historical context when both are relevant.
+
+When you find migration patterns in the tree (people moving from one place to another), proactively search for historical events that might explain why: wars, famines, economic booms, immigration laws, land grants, gold rushes, religious persecution, etc. This is one of the most valuable things you can do.
+
+When citing web sources, include them as links at the end of your response in a "Sources:" section.
 
 
 RELATIONSHIP QUERIES
@@ -361,7 +373,12 @@ def run_agent(
 
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
-        tools=[types.Tool(function_declarations=tool_declarations)],
+        tools=[
+            types.Tool(
+                function_declarations=tool_declarations,
+                google_search=GoogleSearch(),
+            ),
+        ],
         temperature=0.2,
     )
 
