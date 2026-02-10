@@ -37,6 +37,7 @@ from .resources.bookmarks import (
 from .resources.chat import ChatResource
 from .resources.conversations import ConversationsResource, ConversationResource
 from .resources.citations import CitationResource, CitationsResource
+from .resources.insights import InsightResource
 from .resources.config import ConfigResource, ConfigsResource
 from .resources.default_person import DefaultPersonResource
 from .resources.dna import DnaMatchParserResource, PersonDnaMatchesResource
@@ -375,6 +376,13 @@ register_endpt(SearchIndexResource, "/search/index/", "search_index")
 
 # Chat
 register_endpt(ChatResource, "/chat/", "chat")
+
+# Person Insights
+register_endpt(
+    InsightResource,
+    "/people/<string:gramps_id>/insights/",
+    "person-insight",
+)
 
 # Conversations
 register_endpt(ConversationsResource, "/conversations/", "conversations")

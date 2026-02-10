@@ -635,3 +635,26 @@ class Message(user_db.Model):  # type: ignore
     __table_args__ = (
         sa.Index("idx_messages_conversation", "conversation_id", "created_at"),
     )
+
+
+class PersonInsight(user_db.Model):  # type: ignore
+    """AI-generated insight for a person."""
+
+    __tablename__ = "person_insights"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    tree = mapped_column(sa.String, nullable=False)
+    person_handle = mapped_column(sa.String, nullable=False)
+    content = mapped_column(sa.Text, nullable=False)
+    generated_by = mapped_column(
+        GUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    model = mapped_column(sa.String, nullable=False)
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("tree", "person_handle", name="uq_person_insight_tree_handle"),
+        sa.Index("idx_person_insights_tree_handle", "tree", "person_handle"),
+    )
