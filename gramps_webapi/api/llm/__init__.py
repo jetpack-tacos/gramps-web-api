@@ -474,7 +474,10 @@ def generate_blog_post(
 
     # Score findings: prefer those mentioning unfeatured people or events
     def finding_score(finding):
-        ids_in_finding = set(_re.findall(r'\b(I\d{4,5})\b', finding))
+        ids_in_finding = set(
+            _re.findall(r'\b(I\d{4,5})\b', finding)
+            + _re.findall(r'/person/(I\d{4,5})', finding)
+        )
         # Penalize findings where all people are already featured
         if ids_in_finding and ids_in_finding.issubset(featured):
             return 0
@@ -497,7 +500,11 @@ def generate_blog_post(
 
     # Step 3: Fetch person details only for people mentioned in selected findings
     selected_text = "\n\n".join(selected_findings)
-    gramps_ids = list(set(_re.findall(r'\b(I\d{4,5})\b', selected_text)))
+    # Match both bare IDs (I0001) and markdown links (/person/I0001)
+    gramps_ids = list(set(
+        _re.findall(r'\b(I\d{4,5})\b', selected_text)
+        + _re.findall(r'/person/(I\d{4,5})', selected_text)
+    ))
     random.shuffle(gramps_ids)
 
     person_details = []

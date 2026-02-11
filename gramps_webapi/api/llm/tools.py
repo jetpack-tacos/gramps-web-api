@@ -1254,12 +1254,15 @@ def find_coincidences_and_clusters(
 
             interesting_clusters.sort(key=lambda x: len(x[2]), reverse=True)
             for place, decade, people, surnames in interesting_clusters[:max_results]:
-                finding = f"**Geographic Cluster**: {len(people)} people from {len(surnames)} different families ({', '.join(sorted(surnames)[:3])}) all born in {place} in the {decade}s. This suggests a small community with multiple family lines."
+                # Include up to 4 example people with Gramps IDs for linking
+                examples = [f"[{p[1]}](/person/{p[0]})" for p in people[:4]]
+                examples_str = ", ".join(examples)
+                finding = f"**Geographic Cluster**: {len(people)} people from {len(surnames)} different families ({', '.join(sorted(surnames)[:3])}) all born in {place} in the {decade}s. Examples: {examples_str}. This suggests a small community with multiple family lines."
                 findings.append(finding)
 
         # Temporal Clusters - many events in short timeframe
         if category in ["all", "temporal_clusters"]:
-            event_year_counts = {}  # (event_type, year) -> count
+            event_year_data = {}  # (event_type, year) -> list of (gramps_id, name)
 
             for event_handle in db_handle.iter_event_handles():
                 event = db_handle.get_event_from_handle(event_handle)
@@ -1272,17 +1275,29 @@ def find_coincidences_and_clusters(
                 if date and date.get_year() > 0 and event_type in ["Marriage", "Death", "Emigration", "Immigration"]:
                     year = date.get_year()
                     key = (event_type, year)
-                    event_year_counts[key] = event_year_counts.get(key, 0) + 1
+                    if key not in event_year_data:
+                        event_year_data[key] = []
+                    # Find people linked to this event (limit stored to 6 for memory)
+                    if len(event_year_data[key]) < 6:
+                        for class_name, ref_handle in db_handle.find_backlink_handles(event_handle, ['Person']):
+                            person = db_handle.get_person_from_handle(ref_handle)
+                            if person:
+                                event_year_data[key].append((person.gramps_id, person.get_primary_name().get_name()))
+                                break
 
             # Find years with unusually high event counts
             temporal_clusters = []
-            for (event_type, year), count in event_year_counts.items():
+            for (event_type, year), people in event_year_data.items():
+                count = len(people)
                 if count >= 5:  # 5+ of same event type in one year is notable
-                    temporal_clusters.append((event_type, year, count))
+                    temporal_clusters.append((event_type, year, count, people))
 
             temporal_clusters.sort(key=lambda x: x[2], reverse=True)
-            for event_type, year, count in temporal_clusters[:max_results]:
-                finding = f"**Temporal Cluster**: {count} {event_type} events occurred in {year}. This spike may correlate with historical events (wars, epidemics, economic changes)."
+            for event_type, year, count, people in temporal_clusters[:max_results]:
+                examples = [f"[{p[1]}](/person/{p[0]})" for p in people[:3]]
+                examples_str = ", ".join(examples) if examples else ""
+                extra = f" Including: {examples_str}." if examples_str else ""
+                finding = f"**Temporal Cluster**: {count} {event_type} events occurred in {year}.{extra} This spike may correlate with historical events (wars, epidemics, economic changes)."
                 findings.append(finding)
 
         # Name Reuse (Necronyms) - children named after deceased siblings
@@ -1334,12 +1349,12 @@ def find_coincidences_and_clusters(
 
                             parents = []
                             if father:
-                                parents.append(father.get_primary_name().get_name())
+                                parents.append(f"[{father.get_primary_name().get_name()}](/person/{father.gramps_id})")
                             if mother:
-                                parents.append(mother.get_primary_name().get_name())
+                                parents.append(f"[{mother.get_primary_name().get_name()}](/person/{mother.gramps_id})")
                             parents_str = " and ".join(parents) if parents else "Unknown parents"
 
-                            finding = f"**Necronym**: The family of {parents_str} had multiple children named '{child['name']}'. {prev['full_name']} died around {prev['death_year']}, and another child was given the same name. This was a common practice to preserve family names."
+                            finding = f"**Necronym**: The family of {parents_str} had multiple children named '{child['name']}'. [{prev['full_name']}](/person/{prev['gramps_id']}) died around {prev['death_year']}, and another child [{child['full_name']}](/person/{child['gramps_id']}) was given the same name. This was a common practice to preserve family names."
                             findings.append(finding)
                             break
                     else:
