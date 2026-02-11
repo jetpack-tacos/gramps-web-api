@@ -38,6 +38,8 @@ from .resources.chat import ChatResource
 from .resources.conversations import ConversationsResource, ConversationResource
 from .resources.citations import CitationResource, CitationsResource
 from .resources.insights import InsightResource
+from .resources.nuggets import NuggetsListResource, NuggetResource
+from .resources.blog import BlogGenerateResource, BlogCheckResource
 from .resources.config import ConfigResource, ConfigsResource
 from .resources.default_person import DefaultPersonResource
 from .resources.dna import DnaMatchParserResource, PersonDnaMatchesResource
@@ -383,6 +385,14 @@ register_endpt(
     "/people/<string:gramps_id>/insights/",
     "person-insight",
 )
+
+# Nuggets
+register_endpt(NuggetsListResource, "/nuggets/", "nuggets")
+register_endpt(NuggetResource, "/nuggets/<string:nugget_id>/", "nugget")
+
+# Blog
+register_endpt(BlogGenerateResource, "/blog/generate/", "blog-generate")
+register_endpt(BlogCheckResource, "/blog/check/", "blog-check")
 
 # Conversations
 register_endpt(ConversationsResource, "/conversations/", "conversations")
