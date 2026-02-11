@@ -384,7 +384,9 @@ WRITING STYLE:
 - Open with a hook that draws the reader in
 - Weave specific names, dates, and places into the narrative
 - Connect family events to the broader historical context of the time
-- Use person links in markdown format: [Name](/person/GRAMPS_ID)
+- ALWAYS link every person you mention using markdown: [Full Name](/person/GRAMPS_ID)
+- Every blog post MUST mention at least 3 specific people by name with links
+- Even when writing about events or patterns, name the actual people who lived through them
 - End with an invitation for family members to explore further or share memories
 - Make ancestors feel like real people with real lives, not just records
 
@@ -393,6 +395,7 @@ RULES:
 - You MAY add historical context about the time period and places mentioned — this is encouraged.
 - Clearly distinguish between what the records show and what you are inferring from history.
 - Do NOT use numbered lists or bullet points in the blog post itself.
+- EVERY person mentioned must be linked: [Name](/person/GRAMPS_ID). Use IDs from the data provided.
 
 FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
 TITLE: [A compelling, specific title — not generic]
