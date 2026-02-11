@@ -190,6 +190,24 @@ class ExportOptions:
         return dbase
 
 
+def _rebrand_string(text: str) -> str:
+    """Replace Gramps branding with GenAI in user-visible strings."""
+    if text is None:
+        return text
+    # Only replace in user-visible contexts, not technical terms
+    replacements = [
+        ("Gramps XML", "GenAI XML"),
+        ("Gramps family tree", "GenAI family tree"),
+        ("a Gramps", "a GenAI"),
+        ("the Gramps", "the GenAI"),
+        ("Gramps Web", "GenAI"),
+    ]
+    result = text
+    for old, new in replacements:
+        result = result.replace(old, new)
+    return result
+
+
 def get_exporters(extension: str | None = None):
     """Extract and return list of exporters."""
     exporters = []
@@ -200,8 +218,8 @@ def get_exporters(extension: str | None = None):
         if plugin.get_extension() in DISABLED_EXPORTERS:
             continue
         exporter = {
-            "name": plugin.get_name(),
-            "description": plugin.get_description(),
+            "name": _rebrand_string(plugin.get_name()),
+            "description": _rebrand_string(plugin.get_description()),
             "extension": plugin.get_extension(),
             "module": plugin.get_module_name(),
         }

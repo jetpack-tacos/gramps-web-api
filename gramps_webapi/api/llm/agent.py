@@ -30,9 +30,18 @@ from google.genai.types import GoogleSearch, Tool
 
 from .deps import AgentDeps
 from .tools import (
+    analyze_migration_patterns,
+    analyze_naming_patterns,
     filter_events,
     filter_people,
+    find_coincidences_and_clusters,
+    find_data_quality_issues,
+    find_relationship_path,
     get_current_date,
+    get_family_details,
+    get_occupation_summary,
+    get_person_full_details,
+    get_tree_statistics,
     search_genealogy_database,
 )
 
@@ -48,6 +57,34 @@ Base your answers ONLY on information returned by the tools. Do NOT make up fact
 Think carefully about what the user is asking before choosing which tool and parameters to use.
 
 If the user refers to themselves ("I", "my", "me"), ask for their name in the family tree to look them up.
+
+IMPORTANT: When looking up a specific person by name, ALWAYS use filter_people with given_name and/or surname parameters. Do NOT use search_genealogy_database for name lookups - that tool is for semantic/concept searches only. Use filter_people for precise name matching.
+
+
+ANALYTICAL DEPTH AND NARRATIVE SYNTHESIS
+
+Your most valuable role is to notice things the user would never think to ask about. Most users don't know what's in their tree, so they can't form good questions.
+
+When asked broad questions like "what's interesting?" or "surprise me", use find_coincidences_and_clusters to discover patterns: geographic clusters, temporal clusters, chain migration, naming traditions, parallel lives.
+
+The bar for "interesting" is high. Don't just report statistical extremes ("oldest person was 94"). Look for coincidences that suggest a story: "Three sisters all married men from the same Norwegian parish within two years" or "This person listed as 'drayman' in 1895 but 'automobile mechanic' in 1912 - one of the first to make the transition."
+
+Use multi-step reasoning: discover a pattern → get full details on the people involved → search the web for historical context → weave it into a narrative.
+
+For migration questions, use analyze_migration_patterns to find movement patterns, then proactively search for historical events that explain WHY people moved: wars, famines, land grants, gold rushes, religious persecution, economic booms.
+
+
+TOOL CHAINING STRATEGY
+
+For narrative questions about specific people: use get_person_full_details to get comprehensive details, then search_genealogy_database or filter_people to find related people, then Google Search for historical context.
+
+For "tell me about [person]" requests: pull all available data and weave it into a readable narrative, not just a list of facts. Include historical context when dates/places are known.
+
+For discovery questions ("what's interesting", "surprise me"): start with find_coincidences_and_clusters, pick the most compelling findings, then enrich them with get_person_full_details and web search.
+
+For relationship questions: use find_relationship_path to explain the connection in plain language.
+
+For data quality awareness: when presenting information, note when sources are missing or data seems inconsistent. The find_data_quality_issues tool can help identify gaps.
 
 
 WEB RESEARCH GUIDELINES
@@ -95,7 +132,7 @@ OTHER GUIDELINES
 
 If you don't have enough information after using the tools, say "I don't know" or "I couldn't find that information."
 
-Keep your answers concise and accurate."""
+Keep your answers concise and accurate, but don't sacrifice narrative quality for brevity. A good story is worth a few extra sentences."""
 
 
 class _ToolContext:
@@ -302,6 +339,207 @@ def _make_tool_wrappers(deps: AgentDeps) -> list[types.FunctionDeclaration]:
                 },
             ),
         ),
+        # Phase 6 - Tier 1: Deep Record Access
+        types.FunctionDeclaration(
+            name="get_person_full_details",
+            description=(
+                "Get complete record for one person including all events, notes, sources, "
+                "media refs, family links, and attributes. Use this when you need comprehensive "
+                "details about a specific person beyond basic biographical info."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "gramps_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of the person (e.g., 'I0001')",
+                    ),
+                    "handle": types.Schema(
+                        type=types.Type.STRING,
+                        description="Internal handle of the person (use gramps_id instead if you have it)",
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="get_family_details",
+            description=(
+                "Get full family record including parents, children, marriage/divorce events, "
+                "and family notes."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "family_handle": types.Schema(
+                        type=types.Type.STRING,
+                        description="Internal handle of the family",
+                    ),
+                    "gramps_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of either spouse (will find their family)",
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="find_relationship_path",
+            description=(
+                "Calculate exact relationship between two people and return the connecting path. "
+                "Example: 'A is the grandfather of B' with distance information."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "person1_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of first person",
+                    ),
+                    "person2_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of second person",
+                    ),
+                },
+                required=["person1_id", "person2_id"],
+            ),
+        ),
+        # Phase 6 - Tier 2: Whole-Tree Analytics
+        types.FunctionDeclaration(
+            name="get_tree_statistics",
+            description=(
+                "Get aggregate statistics about the entire family tree including total counts, "
+                "date ranges, top surnames, top places, average family size, average lifespan, "
+                "geographic distribution, and event type distribution."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={},
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="find_coincidences_and_clusters",
+            description=(
+                "The most important analytical tool. Find narratively interesting patterns and "
+                "coincidences in the family tree. Looks for geographic clusters, temporal clusters, "
+                "chain migration, name reuse (necronyms), occupation shifts, parallel lives, "
+                "disappearances, and statistical outliers. Use this for 'surprise me' or "
+                "'what's interesting' queries."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "category": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Type of coincidence to search for: 'all' (default), "
+                            "'geographic_clusters', 'temporal_clusters', 'chain_migration', "
+                            "'name_reuse', 'occupation_shifts', 'parallel_lives', "
+                            "'disappearances', 'statistical_outliers'"
+                        ),
+                    ),
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum findings to return per category (default: 10, max: 20)",
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="analyze_migration_patterns",
+            description=(
+                "Extract all location changes across people and generations. Returns a timeline "
+                "of geographic movements grouped by family line. Highlights chain migration when "
+                "multiple families moved to/from the same place in the same period."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "surname": types.Schema(
+                        type=types.Type.STRING,
+                        description="Filter to one family line (optional)",
+                    ),
+                    "start_year": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Earliest year to include (optional)",
+                    ),
+                    "end_year": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Latest year to include (optional)",
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="find_data_quality_issues",
+            description=(
+                "Find people missing key data or with suspicious records. Useful for identifying "
+                "gaps in the family tree."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "issue_type": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Type of data quality issue: 'missing_birth', 'missing_death', "
+                            "'missing_parents', 'no_sources', 'no_death_for_old', "
+                            "'impossible_dates', 'potential_duplicates'"
+                        ),
+                    ),
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum results to return (default: 20, max: 50)",
+                    ),
+                },
+                required=["issue_type"],
+            ),
+        ),
+        # Phase 6 - Tier 3: Cultural Patterns
+        types.FunctionDeclaration(
+            name="analyze_naming_patterns",
+            description=(
+                "Find naming traditions: children named after grandparents, recurring given names "
+                "across generations, necronyms (reusing names of deceased children)."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "surname": types.Schema(
+                        type=types.Type.STRING,
+                        description="Filter to one family line (optional)",
+                    ),
+                    "max_generations": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="How many generations to analyze (default: 5)",
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="get_occupation_summary",
+            description=(
+                "List all occupations found in events/attributes, grouped by time period and "
+                "location. Highlights occupation transitions within same person's life "
+                "(e.g., farmer → factory worker) and occupation clusters (many people in same "
+                "trade in same place)."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "surname": types.Schema(
+                        type=types.Type.STRING,
+                        description="Filter to one family line (optional)",
+                    ),
+                    "start_year": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Earliest year to include (optional)",
+                    ),
+                    "end_year": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Latest year to include (optional)",
+                    ),
+                },
+            ),
+        ),
     ]
 
 
@@ -330,6 +568,27 @@ def execute_tool_call(
         return filter_people(ctx, **tool_args)
     elif tool_name == "filter_events":
         return filter_events(ctx, **tool_args)
+    # Phase 6 - Tier 1: Deep Record Access
+    elif tool_name == "get_person_full_details":
+        return get_person_full_details(ctx, **tool_args)
+    elif tool_name == "get_family_details":
+        return get_family_details(ctx, **tool_args)
+    elif tool_name == "find_relationship_path":
+        return find_relationship_path(ctx, **tool_args)
+    # Phase 6 - Tier 2: Whole-Tree Analytics
+    elif tool_name == "get_tree_statistics":
+        return get_tree_statistics(ctx)
+    elif tool_name == "find_coincidences_and_clusters":
+        return find_coincidences_and_clusters(ctx, **tool_args)
+    elif tool_name == "analyze_migration_patterns":
+        return analyze_migration_patterns(ctx, **tool_args)
+    elif tool_name == "find_data_quality_issues":
+        return find_data_quality_issues(ctx, **tool_args)
+    # Phase 6 - Tier 3: Cultural Patterns
+    elif tool_name == "analyze_naming_patterns":
+        return analyze_naming_patterns(ctx, **tool_args)
+    elif tool_name == "get_occupation_summary":
+        return get_occupation_summary(ctx, **tool_args)
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -383,7 +642,10 @@ def run_agent(
     )
 
     max_iterations = 10
-    for _ in range(max_iterations):
+    iteration = 0
+    has_function_call = False
+
+    for iteration in range(max_iterations):
         response = client.models.generate_content(
             model=model_name,
             contents=contents,
@@ -423,5 +685,22 @@ def run_agent(
 
         # Add tool results back to the conversation
         contents.append(types.Content(role="user", parts=function_response_parts))
+
+    # If we hit the max iterations and the last response still has function calls,
+    # force a final text response by sending tool results with a prompt to synthesize
+    if iteration == max_iterations - 1 and has_function_call:
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(
+                    text="Please provide your answer now based on the information you've gathered. Synthesize what you've learned into a helpful response."
+                )],
+            )
+        )
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
 
     return response

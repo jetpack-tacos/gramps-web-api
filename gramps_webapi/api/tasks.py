@@ -688,13 +688,21 @@ def process_chat(
     if conversation_id:
         add_message(conversation_id, role="user", content=query)
 
-    response = answer_with_agent(
-        prompt=query,
-        tree=tree,
-        include_private=include_private,
-        user_id=user_id,
-        history=history,
-    )
+    try:
+        response = answer_with_agent(
+            prompt=query,
+            tree=tree,
+            include_private=include_private,
+            user_id=user_id,
+            history=history,
+        )
+    except Exception as e:
+        # Log the error
+        from .util import get_logger
+        logger = get_logger()
+        logger.error(f"Error in answer_with_agent: {str(e)}", exc_info=True)
+        # Re-raise with more context
+        raise RuntimeError(f"AI agent error: {str(e)}") from e
 
     # Extract text from Gemini response
     response_text = ""
@@ -704,6 +712,17 @@ def process_chat(
                 response_text += part.text
 
     response_text = sanitize_answer(response_text)
+
+    # If no response text was generated, provide a helpful error
+    if not response_text or not response_text.strip():
+        from .util import get_logger
+        logger = get_logger()
+        logger.error("Agent completed but generated no response text. This usually means the agent hit the iteration limit while calling tools.")
+        raise RuntimeError(
+            "The AI assistant was unable to generate a response after processing your query. "
+            "This might indicate the query is too complex or requires simplification. "
+            "Please try asking a more specific question."
+        )
 
     # Save the assistant message
     metadata = None

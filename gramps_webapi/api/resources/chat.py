@@ -96,8 +96,14 @@ class ChatResource(ProtectedResource):
                 verbose=args_query["verbose"],
                 conversation_id=conversation_id,
             )
-        except ValueError:
-            abort_with_message(422, "Invalid message format")
+        except ValueError as e:
+            abort_with_message(422, f"Invalid message format: {str(e)}")
+        except Exception as e:
+            # Log the full error for debugging
+            import logging
+            logging.error(f"Error in chat processing: {str(e)}", exc_info=True)
+            # Return detailed error to client
+            abort_with_message(500, f"Chat processing error: {str(e)}")
 
         update_usage_ai(new=1)
         return result
