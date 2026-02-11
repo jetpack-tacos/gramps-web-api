@@ -64,9 +64,10 @@ def _get_last_blog_post_date(db_handle):
     return None
 
 
-def _get_existing_blog_titles(db_handle):
-    """Get titles of existing blog posts for diversity."""
+def _get_existing_blog_info(db_handle):
+    """Get titles and featured person IDs from existing blog posts for diversity."""
     titles = []
+    featured_ids = set()
     blog_tag = None
 
     for tag_handle in db_handle.get_tag_handles():
@@ -76,14 +77,21 @@ def _get_existing_blog_titles(db_handle):
             break
 
     if not blog_tag:
-        return titles
+        return titles, featured_ids
 
+    import re
     for source_handle in db_handle.get_source_handles():
         source = db_handle.get_source_from_handle(source_handle)
         if blog_tag.handle in source.tag_list:
             titles.append(source.title)
+            # Extract person IDs from blog content
+            for note_handle in source.get_note_list():
+                note = db_handle.get_note_from_handle(note_handle)
+                text = note.get()
+                ids = re.findall(r'/person/(I\d{4,5})', text)
+                featured_ids.update(ids)
 
-    return titles
+    return titles, featured_ids
 
 
 class BlogGenerateResource(ProtectedResource):
@@ -114,9 +122,9 @@ class BlogGenerateResource(ProtectedResource):
                 user_id=user_id,
             )
 
-            # Get existing titles so the LLM writes about something new
-            previous_titles = _get_existing_blog_titles(db_handle)
-            logger.info("Found %d existing blog posts", len(previous_titles))
+            # Get existing titles and featured person IDs for diversity
+            previous_titles, featured_ids = _get_existing_blog_info(db_handle)
+            logger.info("Found %d existing blog posts featuring %d people", len(previous_titles), len(featured_ids))
 
             # Single-shot Gemini call with pre-gathered context
             title, content, metadata = generate_blog_post(
@@ -124,6 +132,7 @@ class BlogGenerateResource(ProtectedResource):
                 include_private=include_private,
                 user_id=user_id,
                 previous_titles=previous_titles,
+                previously_featured_ids=featured_ids,
             )
 
             if not content:

@@ -406,6 +406,7 @@ def generate_blog_post(
     include_private: bool,
     user_id: str,
     previous_titles: list[str] | None = None,
+    previously_featured_ids: set[str] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     """Generate a blog post using data-driven topic selection and single-shot Gemini call.
 
@@ -418,6 +419,7 @@ def generate_blog_post(
         include_private: Whether to include private information
         user_id: The user identifier
         previous_titles: Titles of existing blog posts (for diversity)
+        previously_featured_ids: Gramps IDs already featured in existing posts
 
     Returns:
         Tuple of (title, content, metadata_dict)
@@ -458,20 +460,42 @@ def generate_blog_post(
     # Step 2: Get detailed records for a sample of interesting people
     # Extract Gramps IDs mentioned in the clusters/migration data
     import re as _re
-    gramps_ids = list(set(_re.findall(r'\b(I\d{4,5})\b', clusters_text + migration_text)))
+    import random
+    all_gramps_ids = list(set(_re.findall(r'\b(I\d{4,5})\b', clusters_text + migration_text)))
+
+    # Prioritize people NOT already featured in existing blog posts
+    featured = previously_featured_ids or set()
+    unfeatured_ids = [gid for gid in all_gramps_ids if gid not in featured]
+    featured_ids = [gid for gid in all_gramps_ids if gid in featured]
+
+    # Shuffle both lists for variety, prefer unfeatured
+    random.shuffle(unfeatured_ids)
+    random.shuffle(featured_ids)
+    gramps_ids = unfeatured_ids + featured_ids
+
+    logger.info(
+        "Found %d candidate people (%d unfeatured, %d previously featured)",
+        len(gramps_ids), len(unfeatured_ids), len(featured_ids),
+    )
+
     person_details = []
     for gid in gramps_ids[:5]:  # Limit to 5 people to keep context manageable
         details = get_person_full_details(ctx, gramps_id=gid)
         if details and "Error" not in details and "private" not in details.lower():
             person_details.append(f"--- PERSON {gid} ---\n{details}")
-    logger.info("Gathered details for %d people", len(person_details))
+    logger.info("Gathered details for %d people: %s", len(person_details), [gid for gid in gramps_ids[:5]])
 
     # Step 3: Build the context
-    previous_titles_text = ""
+    diversity_text = ""
     if previous_titles:
-        previous_titles_text = (
+        diversity_text += (
             "\n\nPREVIOUS BLOG POST TITLES (write about something DIFFERENT):\n"
             + "\n".join(f"- {t}" for t in previous_titles[-15:])
+        )
+    if featured:
+        diversity_text += (
+            "\n\nPEOPLE ALREADY FEATURED IN PREVIOUS POSTS (do NOT focus on these again): "
+            + ", ".join(sorted(featured))
         )
 
     context = (
@@ -479,9 +503,10 @@ def generate_blog_post(
         f"INTERESTING PATTERNS AND COINCIDENCES:\n{clusters_text}\n\n"
         f"MIGRATION PATTERNS:\n{migration_text}\n\n"
         f"DETAILED PERSON RECORDS:\n" + "\n\n".join(person_details)
-        + previous_titles_text
+        + diversity_text
         + "\n\nPick the most compelling story from the data above and write a blog post about it. "
-        "Focus on specific people and weave their records into a narrative with historical context."
+        "Focus on specific people and weave their records into a narrative with historical context. "
+        "Choose people who have NOT been featured in previous posts."
     )
 
     client = genai.Client(api_key=api_key)
