@@ -445,9 +445,12 @@ def generate_blog_post(
     )
     ctx = _ToolContext(deps)
 
+    import re as _re
+    import random
+
     logger.info("Gathering context for blog post generation...")
 
-    # Step 1: Discover interesting patterns
+    # Step 1: Gather all findings from analytical tools
     clusters_text = find_coincidences_and_clusters(ctx, category="all", max_results=10)
     logger.info("Coincidences/clusters gathered (%d chars)", len(clusters_text))
 
@@ -457,56 +460,67 @@ def generate_blog_post(
     migration_text = analyze_migration_patterns(ctx)
     logger.info("Migration patterns gathered (%d chars)", len(migration_text))
 
-    # Step 2: Get detailed records for a sample of interesting people
-    # Extract Gramps IDs mentioned in the clusters/migration data
-    import re as _re
-    import random
-    all_gramps_ids = list(set(_re.findall(r'\b(I\d{4,5})\b', clusters_text + migration_text)))
+    # Step 2: Split findings into individual items and select a random subset
+    # Each finding is separated by double newline in the tool output
+    all_findings = []
+    for text in [clusters_text, migration_text]:
+        items = [f.strip() for f in text.split("\n\n") if f.strip()]
+        all_findings.extend(items)
 
-    # Prioritize people NOT already featured in existing blog posts
     featured = previously_featured_ids or set()
-    unfeatured_ids = [gid for gid in all_gramps_ids if gid not in featured]
-    featured_ids = [gid for gid in all_gramps_ids if gid in featured]
 
-    # Shuffle both lists for variety, prefer unfeatured
-    random.shuffle(unfeatured_ids)
-    random.shuffle(featured_ids)
-    gramps_ids = unfeatured_ids + featured_ids
+    # Score findings: prefer those mentioning unfeatured people or events
+    def finding_score(finding):
+        ids_in_finding = set(_re.findall(r'\b(I\d{4,5})\b', finding))
+        # Penalize findings where all people are already featured
+        if ids_in_finding and ids_in_finding.issubset(featured):
+            return 0
+        # Bonus for findings with unfeatured people
+        unfeatured_count = len(ids_in_finding - featured)
+        return unfeatured_count + 1  # +1 so event-only findings still score
+
+    scored = [(finding_score(f), f) for f in all_findings]
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Take top-scoring findings, then randomly pick 2-3 from the top half
+    top_half = scored[:max(len(scored) // 2, 3)]
+    random.shuffle(top_half)
+    selected_findings = [f for _, f in top_half[:3]]
 
     logger.info(
-        "Found %d candidate people (%d unfeatured, %d previously featured)",
-        len(gramps_ids), len(unfeatured_ids), len(featured_ids),
+        "Selected %d findings from %d total (avoiding %d previously featured people)",
+        len(selected_findings), len(all_findings), len(featured),
     )
 
+    # Step 3: Fetch person details only for people mentioned in selected findings
+    selected_text = "\n\n".join(selected_findings)
+    gramps_ids = list(set(_re.findall(r'\b(I\d{4,5})\b', selected_text)))
+    random.shuffle(gramps_ids)
+
     person_details = []
-    for gid in gramps_ids[:5]:  # Limit to 5 people to keep context manageable
+    for gid in gramps_ids[:5]:
         details = get_person_full_details(ctx, gramps_id=gid)
         if details and "Error" not in details and "private" not in details.lower():
             person_details.append(f"--- PERSON {gid} ---\n{details}")
-    logger.info("Gathered details for %d people: %s", len(person_details), [gid for gid in gramps_ids[:5]])
+    logger.info("Gathered details for %d people from selected findings", len(person_details))
 
-    # Step 3: Build the context
+    # Step 4: Build the context — selected findings drive the topic
     diversity_text = ""
     if previous_titles:
         diversity_text += (
             "\n\nPREVIOUS BLOG POST TITLES (write about something DIFFERENT):\n"
             + "\n".join(f"- {t}" for t in previous_titles[-15:])
         )
-    if featured:
-        diversity_text += (
-            "\n\nPEOPLE ALREADY FEATURED IN PREVIOUS POSTS (do NOT focus on these again): "
-            + ", ".join(sorted(featured))
-        )
 
     context = (
-        f"TREE STATISTICS:\n{stats_text}\n\n"
-        f"INTERESTING PATTERNS AND COINCIDENCES:\n{clusters_text}\n\n"
-        f"MIGRATION PATTERNS:\n{migration_text}\n\n"
-        f"DETAILED PERSON RECORDS:\n" + "\n\n".join(person_details)
+        f"TREE STATISTICS (for background):\n{stats_text}\n\n"
+        f"SELECTED FINDINGS TO WRITE ABOUT:\n{selected_text}\n\n"
+        f"DETAILED PERSON RECORDS (for people mentioned in findings):\n"
+        + "\n\n".join(person_details)
         + diversity_text
-        + "\n\nPick the most compelling story from the data above and write a blog post about it. "
-        "Focus on specific people and weave their records into a narrative with historical context. "
-        "Choose people who have NOT been featured in previous posts."
+        + "\n\nWrite a blog post based on the SELECTED FINDINGS above. "
+        "The findings may be about events, patterns, or phenomena — not just people. "
+        "Weave in the person details and historical context to bring the story to life."
     )
 
     client = genai.Client(api_key=api_key)
