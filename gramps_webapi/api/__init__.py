@@ -40,6 +40,7 @@ from .resources.citations import CitationResource, CitationsResource
 from .resources.insights import InsightResource
 from .resources.nuggets import NuggetsListResource, NuggetResource
 from .resources.blog import BlogGenerateResource, BlogCheckResource
+from .resources.this_day import ThisDayResource
 from .resources.config import ConfigResource, ConfigsResource
 from .resources.default_person import DefaultPersonResource
 from .resources.dna import DnaMatchParserResource, PersonDnaMatchesResource
@@ -393,6 +394,9 @@ register_endpt(NuggetResource, "/nuggets/<string:nugget_id>/", "nugget")
 # Blog
 register_endpt(BlogGenerateResource, "/blog/generate/", "blog-generate")
 register_endpt(BlogCheckResource, "/blog/check/", "blog-check")
+
+# This Day
+register_endpt(ThisDayResource, "/this-day/", "this-day")
 
 # Conversations
 register_endpt(ConversationsResource, "/conversations/", "conversations")

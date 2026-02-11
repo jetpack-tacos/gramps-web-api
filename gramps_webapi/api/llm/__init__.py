@@ -582,3 +582,220 @@ def generate_blog_post(
     except Exception as e:
         logger.error("Unexpected error during blog generation: %s", e)
         abort_with_message(500, "Unexpected error generating blog post.")
+
+
+THIS_DAY_SYSTEM_PROMPT = """You're creating a daily "This Day in Your Family" digest — a quick, fun read that makes users smile when they open the app each morning.
+
+You'll receive events from the family tree that happened on today's calendar date across different years (births, deaths, marriages, etc.). Turn these into 3-5 short, punchy blurbs that feel personal and interesting.
+
+TONE:
+- Warm and conversational, like a friend sharing family history
+- Highlight whatever is surprising, touching, or just plain interesting about each event
+- Vary your approach: some can be wry, some warm, some just factual with a twist
+- Keep each blurb to 1-2 sentences max (under 40 words)
+- Historical context is welcome, but keep it punchy
+
+PERSON LINKS:
+- ALWAYS link every person you mention: [Full Name](/person/GRAMPS_ID)
+- Use the exact Gramps IDs from the data provided
+
+RULES:
+- Base blurbs ONLY on the data provided
+- You MAY add historical context to enrich the story
+- No numbered lists, headers, or bold text — just flowing paragraphs
+- If events span very different eras, you can note the range: "From 1723 to 1987, this date saw..."
+
+Write 3-5 blurbs, each as its own paragraph."""
+
+
+def generate_this_day(
+    month: int,
+    day: int,
+    tree: str,
+    include_private: bool,
+    user_id: str,
+) -> tuple[str, dict[str, Any]]:
+    """Generate 'This Day in Your Family' digest using single-shot Gemini call.
+
+    Finds all events in the tree matching the given month and day (across all years),
+    then sends them to Gemini for a narrative treatment.
+
+    Args:
+        month: Month number (1-12)
+        day: Day number (1-31)
+        tree: The tree identifier
+        include_private: Whether to include private information
+        user_id: The user identifier
+
+    Returns:
+        Tuple of (narrative_text, metadata_dict)
+    """
+    logger = get_logger()
+
+    config = current_app.config
+    model_name = config.get("LLM_MODEL")
+
+    if not model_name:
+        raise ValueError("No LLM model specified")
+
+    api_key = os.environ.get("GEMINI_API_KEY") or config.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("No Gemini API key configured")
+
+    # Pre-gather events matching this month/day
+    deps = AgentDeps(
+        tree=tree,
+        include_private=include_private,
+        max_context_length=config.get("LLM_MAX_CONTEXT_LENGTH", 50000),
+        user_id=user_id,
+    )
+
+    from ..util import get_db_outside_request
+    from gramps.gen.lib.date import gregorian
+
+    db_handle = None
+    try:
+        db_handle = get_db_outside_request(
+            tree=tree,
+            view_private=include_private,
+            readonly=True,
+            user_id=user_id,
+        )
+
+        logger.info("Gathering events for month=%d, day=%d", month, day)
+
+        # Collect all events matching this month/day
+        matching_events = []
+
+        for event_handle in db_handle.iter_event_handles():
+            event = db_handle.get_event_from_handle(event_handle)
+            if not include_private and event.private:
+                continue
+
+            date = event.get_date_object()
+            if not date or not date.is_valid():
+                continue
+
+            # Convert to gregorian calendar and check if month and day match
+            greg_date = gregorian(date)
+            if greg_date.get_month() == month and greg_date.get_day() == day:
+                event_type = event.get_type().string
+                year = greg_date.get_year()
+
+                # Find people associated with this event
+                person_names = []
+                person_ids = []
+
+                # Check all people for references to this event
+                for person_handle in db_handle.iter_person_handles():
+                    person = db_handle.get_person_from_handle(person_handle)
+                    if not include_private and person.private:
+                        continue
+
+                    # Check if this event is referenced by the person
+                    event_refs = person.get_event_ref_list()
+                    for event_ref in event_refs:
+                        if event_ref.ref == event_handle:
+                            name = person.get_primary_name().get_name()
+                            gramps_id = person.get_gramps_id()
+                            person_names.append(name)
+                            person_ids.append(gramps_id)
+                            break
+
+                # Also check families for this event (marriages, etc.)
+                for family_handle in db_handle.iter_family_handles():
+                    family = db_handle.get_family_from_handle(family_handle)
+                    if not include_private and family.private:
+                        continue
+
+                    family_event_refs = family.get_event_ref_list()
+                    for event_ref in family_event_refs:
+                        if event_ref.ref == event_handle:
+                            # Add father and mother
+                            father_handle = family.get_father_handle()
+                            mother_handle = family.get_mother_handle()
+
+                            if father_handle:
+                                father = db_handle.get_person_from_handle(father_handle)
+                                if include_private or not father.private:
+                                    person_names.append(father.get_primary_name().get_name())
+                                    person_ids.append(father.get_gramps_id())
+
+                            if mother_handle:
+                                mother = db_handle.get_person_from_handle(mother_handle)
+                                if include_private or not mother.private:
+                                    person_names.append(mother.get_primary_name().get_name())
+                                    person_ids.append(mother.get_gramps_id())
+                            break
+
+                if person_names:  # Only include events with associated people
+                    matching_events.append({
+                        'type': event_type,
+                        'year': year,
+                        'people': list(zip(person_names, person_ids)),
+                    })
+
+        logger.info("Found %d events matching %02d-%02d", len(matching_events), month, day)
+
+        if not matching_events:
+            # No events on this exact date — find the nearest date with events
+            logger.info("No events found for %02d-%02d, searching for nearby dates", month, day)
+
+            # Simple fallback: just return a message
+            fallback_text = f"Nothing recorded on {month:02d}-{day:02d} in your family tree. Check back tomorrow for another date!"
+            return fallback_text, {}
+
+        # Sort by year
+        matching_events.sort(key=lambda x: x['year'])
+
+        # Build context for Gemini
+        context_parts = [f"Events that happened on {month:02d}-{day:02d} across different years:\n"]
+
+        for evt in matching_events:
+            people_str = ", ".join([f"{name} ({gid})" for name, gid in evt['people']])
+            context_parts.append(
+                f"- {evt['year']}: {evt['type']} — {people_str}"
+            )
+
+        context = "\n".join(context_parts)
+        logger.info("Context for Gemini (%d chars): %s", len(context), context[:300])
+
+        client = genai.Client(api_key=api_key)
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=context)],
+                )
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=THIS_DAY_SYSTEM_PROMPT,
+                temperature=0.7,
+            ),
+        )
+
+        response_text = ""
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.text:
+                    response_text += part.text
+
+        metadata = extract_metadata_from_result(response)
+        logger.info("This Day digest generated (%d chars): %s", len(response_text), response_text[:300])
+
+        # Sanitize the response
+        response_text = sanitize_answer(response_text)
+
+        return response_text, metadata
+
+    except ValueError as e:
+        logger.error("Gemini configuration error during this-day generation: %s", e)
+        abort_with_message(500, "Error communicating with the AI model")
+    except Exception as e:
+        logger.error("Unexpected error during this-day generation: %s", e)
+        abort_with_message(500, "Unexpected error generating this-day digest.")
+    finally:
+        if db_handle:
+            db_handle.close()

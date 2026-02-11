@@ -658,3 +658,48 @@ class PersonInsight(user_db.Model):  # type: ignore
         sa.UniqueConstraint("tree", "person_handle", name="uq_person_insight_tree_handle"),
         sa.Index("idx_person_insights_tree_handle", "tree", "person_handle"),
     )
+
+
+class Nugget(user_db.Model):  # type: ignore
+    """AI-generated interesting fact nugget for home page."""
+
+    __tablename__ = "nuggets"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    tree = mapped_column(sa.String, nullable=False)
+    content = mapped_column(sa.Text, nullable=False)
+    nugget_type = mapped_column(sa.String, nullable=False)  # 'person', 'event', 'family', etc.
+    target_handle = mapped_column(sa.String, nullable=True)  # Handle of person/event/etc
+    target_gramps_id = mapped_column(sa.String, nullable=True)  # Gramps ID for easy linking
+    generated_by = mapped_column(
+        GUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    model = mapped_column(sa.String, nullable=False)
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+    display_count = mapped_column(sa.Integer, nullable=False, server_default=sa.text("0"))
+    click_count = mapped_column(sa.Integer, nullable=False, server_default=sa.text("0"))
+
+    __table_args__ = (
+        sa.Index("idx_nuggets_tree_created", "tree", "created_at"),
+        sa.Index("idx_nuggets_tree_display_count", "tree", "display_count"),
+    )
+
+
+class ThisDayCache(user_db.Model):  # type: ignore
+    """Cached 'This Day in Your Family' daily digest."""
+
+    __tablename__ = "this_day_cache"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    tree = mapped_column(sa.String, nullable=False)
+    month_day = mapped_column(sa.String(5), nullable=False)  # e.g., "02-14"
+    content = mapped_column(sa.Text, nullable=False)  # JSON with events and narrative
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.Index("idx_this_day_tree_month_day", "tree", "month_day"),
+    )
