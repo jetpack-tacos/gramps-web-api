@@ -122,6 +122,98 @@ def _filter_findings_for_scope(findings_text: str, scope_ids: set[str]) -> str:
     return "\n\n".join(scoped[:8])
 
 
+def _person_markdown_link(person) -> str:
+    return f"[{person.get_primary_name().get_name()}](/person/{person.gramps_id})"
+
+
+def _build_immediate_family_findings(db_handle, person, include_private: bool) -> str:
+    """Build fallback findings from explicit immediate-family relationships."""
+    person_handle = person.handle
+    person_link = _person_markdown_link(person)
+
+    parents = []
+    siblings = []
+    spouses = []
+    children = []
+
+    for family_handle in person.parent_family_list:
+        family = db_handle.get_family_from_handle(family_handle)
+        if not family:
+            continue
+
+        for parent_handle in [family.father_handle, family.mother_handle]:
+            parent = _safe_get_person(db_handle, parent_handle)
+            if parent and (include_private or not parent.private):
+                parents.append(parent)
+
+        for child_ref in family.child_ref_list:
+            if child_ref.ref == person_handle:
+                continue
+            sibling = _safe_get_person(db_handle, child_ref.ref)
+            if sibling and (include_private or not sibling.private):
+                siblings.append(sibling)
+
+    for family_handle in person.family_list:
+        family = db_handle.get_family_from_handle(family_handle)
+        if not family:
+            continue
+
+        spouse_handle = None
+        if family.father_handle == person_handle:
+            spouse_handle = family.mother_handle
+        elif family.mother_handle == person_handle:
+            spouse_handle = family.father_handle
+
+        spouse = _safe_get_person(db_handle, spouse_handle)
+        if spouse and (include_private or not spouse.private):
+            spouses.append(spouse)
+
+        for child_ref in family.child_ref_list:
+            child = _safe_get_person(db_handle, child_ref.ref)
+            if child and (include_private or not child.private):
+                children.append(child)
+
+    # De-duplicate while preserving order by gramps_id
+    def _dedupe_people(people):
+        seen = set()
+        result = []
+        for p in people:
+            if p.gramps_id in seen:
+                continue
+            seen.add(p.gramps_id)
+            result.append(p)
+        return result
+
+    parents = _dedupe_people(parents)
+    siblings = _dedupe_people(siblings)
+    spouses = _dedupe_people(spouses)
+    children = _dedupe_people(children)
+
+    findings = []
+    if parents:
+        parent_links = ", ".join(_person_markdown_link(p) for p in parents[:4])
+        findings.append(
+            f"**Immediate Family Pattern**: {person_link} is directly connected to parents {parent_links}."
+        )
+    if siblings:
+        sibling_links = ", ".join(_person_markdown_link(p) for p in siblings[:6])
+        findings.append(
+            f"**Sibling Network**: {person_link} has {len(siblings)} recorded sibling(s), including {sibling_links}."
+        )
+    if spouses:
+        spouse_links = ", ".join(_person_markdown_link(p) for p in spouses[:4])
+        findings.append(
+            f"**Spousal Connections**: {person_link} is linked to spouse/partner records including {spouse_links}."
+        )
+    if children:
+        child_links = ", ".join(_person_markdown_link(p) for p in children[:8])
+        findings.append(
+            f"**Descendant Links**: {person_link} has {len(children)} child record(s), including {child_links}."
+        )
+
+    return "\n\n".join(findings)
+
+
 class PersonConnectionsResource(ProtectedResource):
     """Get AI-generated connection narrative for a person."""
 
@@ -163,6 +255,9 @@ class PersonConnectionsResource(ProtectedResource):
 
             person_handle = person.handle
             scope_ids = _get_immediate_family_ids(db_handle, person, include_private)
+            fallback_findings = _build_immediate_family_findings(
+                db_handle, person, include_private
+            )
         finally:
             if db_handle:
                 db_handle.close()
@@ -199,6 +294,9 @@ class PersonConnectionsResource(ProtectedResource):
             person_subset=scope_ids,
         )
         scoped_findings = _filter_findings_for_scope(findings_text, scope_ids)
+
+        if not scoped_findings and fallback_findings:
+            scoped_findings = fallback_findings
 
         if not scoped_findings:
             content = (
