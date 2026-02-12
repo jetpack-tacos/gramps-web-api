@@ -44,6 +44,7 @@ from .resources.this_day import ThisDayResource
 from .resources.config import ConfigResource, ConfigsResource
 from .resources.default_person import DefaultPersonResource
 from .resources.home_person import UserHomePersonResource
+from .resources.branch import UserBranchResource
 from .resources.dna import DnaMatchParserResource, PersonDnaMatchesResource
 from .resources.events import EventResource, EventSpanResource, EventsResource
 from .resources.export_media import MediaArchiveFileResource, MediaArchiveResource
@@ -378,6 +379,11 @@ register_endpt(
     UserHomePersonResource,
     "/users/-/home-person/",
     "user_home_person",
+)
+register_endpt(
+    UserBranchResource,
+    "/users/-/branch/",
+    "user_branch",
 )
 # Search
 register_endpt(SearchResource, "/search/", "search")

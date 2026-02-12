@@ -520,6 +520,7 @@ class User(user_db.Model):  # type: ignore
     role = mapped_column(sa.Integer, default=0)
     tree = mapped_column(sa.String, index=True)
     home_person = mapped_column(sa.String, nullable=True)
+    branch_ids = mapped_column(sa.Text, nullable=True)  # JSON array of Gramps IDs
 
     def __repr__(self):
         """Return string representation of instance."""

@@ -1,12 +1,17 @@
 """Per-user home person API resource."""
 
-from flask import abort, jsonify, request
+import logging
+
+from flask import jsonify, request
 from flask_jwt_extended import get_jwt_identity
 
-from ...auth import get_name, user_db
+from ...auth import user_db
 from ...auth import User
-from ..util import abort_with_message
+from ..util import abort_with_message, get_db_handle
+from .branch import _recompute_and_store_branch
 from . import ProtectedResource
+
+logger = logging.getLogger(__name__)
 
 
 class UserHomePersonResource(ProtectedResource):
@@ -34,4 +39,12 @@ class UserHomePersonResource(ProtectedResource):
 
         user.home_person = gramps_id
         user_db.session.commit()
+
+        # Recompute branch in background — non-blocking, errors are logged
+        try:
+            db_handle = get_db_handle()
+            _recompute_and_store_branch(user, db_handle)
+        except Exception as e:
+            logger.warning("Branch recomputation failed: %s", e)
+
         return jsonify({"gramps_id": user.home_person}), 200
