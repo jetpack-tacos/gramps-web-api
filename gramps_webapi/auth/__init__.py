@@ -519,6 +519,7 @@ class User(user_db.Model):  # type: ignore
     pwhash = mapped_column(sa.String, nullable=False)
     role = mapped_column(sa.Integer, default=0)
     tree = mapped_column(sa.String, index=True)
+    home_person = mapped_column(sa.String, nullable=True)
 
     def __repr__(self):
         """Return string representation of instance."""
