@@ -22,6 +22,7 @@
 import os
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -43,9 +44,13 @@ class TestCLI(unittest.TestCase):
         _, _name = cls.dbman.create_new_db_cli(cls.name, dbid="sqlite")
         cls.config_file = tempfile.NamedTemporaryFile(delete=False)
         cls.user_db = tempfile.NamedTemporaryFile(delete=False)
+        search_index_db = os.path.join(
+            tempfile.gettempdir(), f"grampsweb_cli_search_{uuid.uuid4().hex}.db"
+        )
         config = f"""TREE="Test Web API CLI"
 SECRET_KEY="C2eAhXGrXVe-iljXTjnp4paeRT-m68pq"
 USER_DB_URI="sqlite:///{cls.user_db.name}"
+SEARCH_INDEX_DB_URI="sqlite:///{search_index_db}"
 """
         with open(cls.config_file.name, "w") as f:
             f.write(config)

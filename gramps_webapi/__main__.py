@@ -52,12 +52,13 @@ def cli(ctx, config):
     """Gramps web API command line interface."""
     if config:
         os.environ[ENV_CONFIG_FILE] = os.path.abspath(config)
+    use_prefixed_env = not bool(config)
     # suppress flask-limiter warning
     warnings.filterwarnings(
         "ignore",
         message=".*https://flask-limiter.readthedocs.io#configuring-a-storage-backend.*",
     )
-    ctx.obj = {"app": create_app()}
+    ctx.obj = {"app": create_app(config_from_env=use_prefixed_env)}
 
 
 @cli.command("run")

@@ -20,6 +20,8 @@
 """Tests for the `gramps_webapi.api` module."""
 
 import os
+import tempfile
+import uuid
 from importlib.resources import as_file, files
 from unittest.mock import patch
 
@@ -75,12 +77,18 @@ def setUpModule():
     # create a database with the Gramps example tree
     test_db = ExampleDbSQLite(name="example_gramps")
 
+    search_index_db_uri = (
+        f"sqlite:///{tempfile.gettempdir()}/"
+        f"grampsweb_test_search_{uuid.uuid4().hex}.db"
+    )
+
     with patch.dict("os.environ", {ENV_CONFIG_FILE: TEST_EXAMPLE_GRAMPS_AUTH_CONFIG}):
 
         test_app = create_app(
             config={
                 "TESTING": True,
                 "RATELIMIT_ENABLED": False,
+                "SEARCH_INDEX_DB_URI": search_index_db_uri,
                 "MEDIA_BASE_DIR": f"{os.environ['GRAMPS_RESOURCES']}/doc/gramps/example/gramps",
                 "VECTOR_EMBEDDING_MODEL": "paraphrase-albert-small-v2",
                 "LLM_MODEL": "mock-model",
