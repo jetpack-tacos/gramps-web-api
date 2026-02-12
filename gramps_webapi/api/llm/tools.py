@@ -648,6 +648,311 @@ def filter_events(
     )
 
 
+@log_tool_call
+def get_data_quality_issues(
+    ctx: RunContext[AgentDeps],
+    issue_type: str = "all",
+    max_results: int = 20,
+) -> str:
+    """Get data quality issues using Gramps filter rules.
+
+    Args:
+        issue_type: Category to inspect. Valid values: all, unknown_gender,
+            missing_birth, missing_death, missing_parents, disconnected,
+            incomplete_names, incomplete_events, no_marriage_records, no_sources.
+        max_results: Maximum records to return for a specific issue type.
+
+    Returns:
+        A summary for `all`, or a list of affected people for a specific issue.
+    """
+    logger = get_logger()
+    db_handle = None
+
+    issue_map: dict[str, dict[str, Any]] = {
+        "unknown_gender": {
+            "label": "Unknown Gender",
+            "rule": "HasUnknownGender",
+            "values": [],
+        },
+        "missing_birth": {
+            "label": "Missing Birth Date",
+            "rule": "NoBirthdate",
+            "values": [],
+        },
+        "missing_death": {
+            "label": "Missing Death Date",
+            "rule": "NoDeathdate",
+            "values": [],
+        },
+        "missing_parents": {
+            "label": "Missing Parents",
+            "rule": "MissingParent",
+            "values": [],
+        },
+        "disconnected": {
+            "label": "Disconnected",
+            "rule": "Disconnected",
+            "values": [],
+        },
+        "incomplete_names": {
+            "label": "Incomplete Names",
+            "rule": "IncompleteNames",
+            "values": [],
+        },
+        "incomplete_events": {
+            "label": "Incomplete Events",
+            "rule": "PersonWithIncompleteEvent",
+            "values": [],
+        },
+        "no_marriage_records": {
+            "label": "No Marriage Records",
+            "rule": "NeverMarried",
+            "values": [],
+        },
+        "no_sources": {
+            "label": "No Sources",
+            "rule": "HasSourceCount",
+            "values": ["0"],
+        },
+    }
+    valid_issue_types = ["all", *issue_map.keys()]
+
+    if issue_type not in valid_issue_types:
+        return (
+            f"Invalid issue_type '{issue_type}'. "
+            f"Valid options: {', '.join(valid_issue_types)}"
+        )
+
+    max_results = min(max(1, max_results), 50)
+
+    def _apply_issue_rule(rule_name: str, values: list[str]) -> list[str]:
+        filter_rules = json.dumps({"rules": [{"name": rule_name, "values": values}]})
+        return apply_filter(
+            db_handle=db_handle,
+            args={"rules": filter_rules},
+            namespace="Person",
+            handles=None,
+        )
+
+    try:
+        db_handle = get_db_outside_request(
+            tree=ctx.deps.tree,
+            view_private=ctx.deps.include_private,
+            readonly=True,
+            user_id=ctx.deps.user_id,
+        )
+
+        if issue_type == "all":
+            lines = ["Data quality issues summary:"]
+            for key, issue in issue_map.items():
+                handles = _apply_issue_rule(issue["rule"], issue["values"])
+                lines.append(f"{key}: {len(handles)}")
+            return "\n".join(lines)
+
+        selected_issue = issue_map[issue_type]
+        handles = _apply_issue_rule(selected_issue["rule"], selected_issue["values"])
+        if not handles:
+            return f"No {issue_type} issues found."
+
+        lines = [
+            f"{selected_issue['label']} ({len(handles)} total):",
+        ]
+        for handle in handles[:max_results]:
+            person = db_handle.get_person_from_handle(handle)
+            if person is None:
+                continue
+            if not ctx.deps.include_private and person.private:
+                continue
+            name = person.get_primary_name().get_name() or "Unknown"
+            lines.append(f"[{name}](/person/{person.gramps_id}) ({person.gramps_id})")
+
+        if len(handles) > max_results:
+            lines.append(f"... and {len(handles) - max_results} more")
+
+        return "\n".join(lines)
+
+    except Exception as e:  # pylint: disable=broad-except
+        logger.error("Error getting data quality issues: %s", e)
+        return f"Error getting data quality issues: {str(e)}"
+    finally:
+        if db_handle is not None:
+            try:
+                db_handle.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+
+@log_tool_call
+def update_person_field(
+    ctx: RunContext[AgentDeps],
+    gramps_id: str,
+    field: str,
+    value: Any,
+    reason: str = "",
+) -> str:
+    """Update an editable person field.
+
+    Currently supported fields:
+    - gender: integer value 0 (female), 1 (male), 2 (unknown)
+    """
+    logger = get_logger()
+    db_handle = None
+    allowed_fields = {"gender"}
+
+    if field not in allowed_fields:
+        return (
+            f"Invalid field '{field}'. Allowed fields: "
+            f"{', '.join(sorted(allowed_fields))}"
+        )
+
+    if not ctx.deps.include_private:
+        return "Error updating person: write access requires private-view permission."
+
+    if field == "gender":
+        try:
+            value_int = int(value)
+        except (TypeError, ValueError):
+            return "Invalid gender value. Must be 0 (female), 1 (male), or 2 (unknown)."
+        if value_int not in (0, 1, 2):
+            return "Invalid gender value. Must be 0 (female), 1 (male), or 2 (unknown)."
+    else:
+        value_int = value
+
+    try:
+        from gramps.gen.db import DbTxn
+
+        db_handle = get_db_outside_request(
+            tree=ctx.deps.tree,
+            view_private=ctx.deps.include_private,
+            readonly=False,
+            user_id=ctx.deps.user_id,
+        )
+
+        person = db_handle.get_person_from_gramps_id(gramps_id)
+        if person is None:
+            return f"No person found with Gramps ID {gramps_id}."
+
+        tx_msg = f"AI: Update {field} for {gramps_id}"
+        if reason:
+            tx_msg += f" ({reason})"
+
+        with DbTxn(tx_msg, db_handle) as trans:
+            if field == "gender":
+                person.set_gender(value_int)
+            db_handle.commit_person(person, trans)
+
+        return f"Successfully updated {field} for {gramps_id}."
+
+    except Exception as e:  # pylint: disable=broad-except
+        logger.error("Error updating person field: %s", e)
+        return f"Error updating person: {str(e)}"
+    finally:
+        if db_handle is not None:
+            try:
+                db_handle.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+
+@log_tool_call
+def add_event_to_person(
+    ctx: RunContext[AgentDeps],
+    gramps_id: str,
+    event_type: str,
+    year: int,
+    month: int = 0,
+    day: int = 0,
+    place_name: str = "",
+    reason: str = "",
+) -> str:
+    """Create and link a birth/death event for a person.
+
+    Args:
+        gramps_id: Person Gramps ID (e.g., I0044)
+        event_type: Event type. Allowed: "Birth", "Death"
+        year: Event year
+        month: Event month (0-12)
+        day: Event day (0-31)
+        place_name: Optional free-text place (stored as description if no place handle)
+        reason: Optional rationale stored in revision message
+    """
+    logger = get_logger()
+    db_handle = None
+
+    if not ctx.deps.include_private:
+        return "Error adding event: write access requires private-view permission."
+
+    normalized_type = (event_type or "").strip().lower()
+    allowed_types = {"birth": "Birth", "death": "Death"}
+    if normalized_type not in allowed_types:
+        return (
+            f"Invalid event type '{event_type}'. "
+            f"Valid event types: {', '.join(allowed_types.values())}"
+        )
+
+    if year <= 0:
+        return "Invalid year. Year must be a positive integer."
+    if month < 0 or month > 12:
+        return "Invalid month. Month must be between 0 and 12."
+    if day < 0 or day > 31:
+        return "Invalid day. Day must be between 0 and 31."
+
+    try:
+        from gramps.gen.db import DbTxn
+        from gramps.gen.lib import Date, Event, EventRef
+        from gramps.gen.lib.eventroletype import EventRoleType
+
+        db_handle = get_db_outside_request(
+            tree=ctx.deps.tree,
+            view_private=ctx.deps.include_private,
+            readonly=False,
+            user_id=ctx.deps.user_id,
+        )
+
+        person = db_handle.get_person_from_gramps_id(gramps_id)
+        if person is None:
+            return f"No person found with Gramps ID {gramps_id}."
+
+        if normalized_type == "birth" and person.get_birth_ref():
+            return f"{gramps_id} already has a birth event. Duplicate creation prevented."
+        if normalized_type == "death" and person.get_death_ref():
+            return f"{gramps_id} already has a death event. Duplicate creation prevented."
+
+        event = Event()
+        event.set_type(allowed_types[normalized_type])
+        event.set_date_object(Date((int(year), int(month), int(day))))
+        if place_name:
+            event.set_description(place_name)
+
+        event_ref = EventRef()
+        event_ref.set_role(EventRoleType(EventRoleType.PRIMARY))
+
+        tx_msg = f"AI: Add {allowed_types[normalized_type]} event for {gramps_id}"
+        if reason:
+            tx_msg += f" ({reason})"
+
+        with DbTxn(tx_msg, db_handle) as trans:
+            db_handle.add_event(event, trans)
+            event_ref.set_reference_handle(event.get_handle())
+            person.add_event_ref(event_ref)
+            db_handle.commit_person(person, trans)
+
+        return (
+            f"Successfully added {allowed_types[normalized_type]} event to {gramps_id} "
+            f"(date: {year:04d}-{month:02d}-{day:02d})."
+        )
+
+    except Exception as e:  # pylint: disable=broad-except
+        logger.error("Error adding event to person: %s", e)
+        return f"Error adding event: {str(e)}"
+    finally:
+        if db_handle is not None:
+            try:
+                db_handle.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+
 # =============================================================================
 # PHASE 6 - TIER 1: Deep Record Access Tools
 # =============================================================================

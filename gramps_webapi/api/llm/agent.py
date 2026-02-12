@@ -30,6 +30,7 @@ from google.genai.types import GoogleSearch, Tool
 
 from .deps import AgentDeps
 from .tools import (
+    add_event_to_person,
     analyze_migration_patterns,
     analyze_naming_patterns,
     filter_events,
@@ -38,11 +39,13 @@ from .tools import (
     find_data_quality_issues,
     find_relationship_path,
     get_current_date,
+    get_data_quality_issues,
     get_family_details,
     get_occupation_summary,
     get_person_full_details,
     get_tree_statistics,
     search_genealogy_database,
+    update_person_field,
 )
 
 
@@ -347,6 +350,100 @@ def _make_tool_wrappers(deps: AgentDeps) -> list[types.FunctionDeclaration]:
                 },
             ),
         ),
+        types.FunctionDeclaration(
+            name="get_data_quality_issues",
+            description=(
+                "Get data quality issue counts or affected records. Use issue_type='all' "
+                "for summary counts, or a specific issue type for records."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "issue_type": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Issue type to query: 'all', 'unknown_gender', "
+                            "'missing_birth', 'missing_death', 'missing_parents', "
+                            "'disconnected', 'incomplete_names', 'incomplete_events', "
+                            "'no_marriage_records', 'no_sources'"
+                        ),
+                    ),
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum records to return for specific issue types (1-50, default 20)",
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="update_person_field",
+            description=(
+                "Update a supported person field. Currently supports gender "
+                "(0=female, 1=male, 2=unknown)."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "gramps_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of the person to update (e.g., 'I0001')",
+                    ),
+                    "field": types.Schema(
+                        type=types.Type.STRING,
+                        description="Field to update. Currently: 'gender'",
+                    ),
+                    "value": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="New field value (for gender: 0, 1, or 2)",
+                    ),
+                    "reason": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional rationale stored in revision message",
+                    ),
+                },
+                required=["gramps_id", "field", "value"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="add_event_to_person",
+            description=(
+                "Create and link a birth/death event for a person with duplicate prevention."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "gramps_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="Gramps ID of the person (e.g., 'I0044')",
+                    ),
+                    "event_type": types.Schema(
+                        type=types.Type.STRING,
+                        description="Event type to add: 'Birth' or 'Death'",
+                    ),
+                    "year": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Event year (positive integer)",
+                    ),
+                    "month": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Event month (0-12, optional)",
+                    ),
+                    "day": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Event day (0-31, optional)",
+                    ),
+                    "place_name": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional free-text place name",
+                    ),
+                    "reason": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional rationale stored in revision message",
+                    ),
+                },
+                required=["gramps_id", "event_type", "year"],
+            ),
+        ),
         # Phase 6 - Tier 1: Deep Record Access
         types.FunctionDeclaration(
             name="get_person_full_details",
@@ -576,6 +673,12 @@ def execute_tool_call(
         return filter_people(ctx, **tool_args)
     elif tool_name == "filter_events":
         return filter_events(ctx, **tool_args)
+    elif tool_name == "get_data_quality_issues":
+        return get_data_quality_issues(ctx, **tool_args)
+    elif tool_name == "update_person_field":
+        return update_person_field(ctx, **tool_args)
+    elif tool_name == "add_event_to_person":
+        return add_event_to_person(ctx, **tool_args)
     # Phase 6 - Tier 1: Deep Record Access
     elif tool_name == "get_person_full_details":
         return get_person_full_details(ctx, **tool_args)

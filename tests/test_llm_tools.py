@@ -24,9 +24,12 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from gramps_webapi.api.llm.tools import (
+    add_event_to_person,
     filter_events,
     filter_people,
     _build_date_expression,
+    get_data_quality_issues,
+    update_person_field,
 )
 from gramps_webapi.api.llm.deps import AgentDeps
 from gramps_webapi.api.search import get_search_indexer
@@ -779,6 +782,276 @@ class TestFilterPeopleRealWorldQueries(unittest.TestCase):
         result = self._filter_people(birth_place="Massachusetts")
         self.assertNotIn("Error", result)
         # May or may not have Massachusetts births
+
+
+class TestDataQualityTools(unittest.TestCase):
+    """Tests for get_data_quality_issues tool."""
+
+    def setUp(self):
+        self.ctx = MagicMock()
+        self.ctx.deps = AgentDeps(
+            tree=TEST_TREE,
+            include_private=True,
+            max_context_length=50000,
+            user_id="test_user",
+        )
+
+    def _get_data_quality_issues(self, **kwargs):
+        with TEST_APP.app_context():
+            return get_data_quality_issues(self.ctx, **kwargs)
+
+    def test_issue_type_all_returns_summary_counts(self):
+        """Calling with issue_type='all' returns category counts."""
+        result = self._get_data_quality_issues(issue_type="all")
+
+        self.assertIn("Data quality issues summary", result)
+        self.assertIn("unknown_gender:", result)
+        self.assertIn("missing_birth:", result)
+        self.assertIn("missing_death:", result)
+        self.assertIn("missing_parents:", result)
+        self.assertIn("no_sources:", result)
+
+    def test_issue_type_unknown_gender_returns_records(self):
+        """Calling with issue_type='unknown_gender' returns person records."""
+        result = self._get_data_quality_issues(issue_type="unknown_gender", max_results=5)
+
+        self.assertNotIn("Error", result)
+        self.assertIn("Unknown Gender", result)
+        self.assertTrue(
+            "/person/" in result or "No unknown_gender issues found." in result,
+            f"Expected person records or empty-state message, got: {result}",
+        )
+
+    def test_invalid_issue_type_returns_error_with_valid_options(self):
+        """Invalid issue type should return a helpful validation error."""
+        result = self._get_data_quality_issues(issue_type="not-a-real-type")
+
+        self.assertIn("Invalid issue_type", result)
+        self.assertIn("Valid options:", result)
+        self.assertIn("all", result)
+        self.assertIn("unknown_gender", result)
+
+
+class TestUpdatePersonFieldTool(unittest.TestCase):
+    """Tests for update_person_field tool."""
+
+    def setUp(self):
+        self.ctx = MagicMock()
+        self.ctx.deps = AgentDeps(
+            tree=TEST_TREE,
+            include_private=True,
+            max_context_length=50000,
+            user_id="test_user",
+        )
+
+    def _update_person_field(self, **kwargs):
+        with TEST_APP.app_context():
+            return update_person_field(self.ctx, **kwargs)
+
+    def test_update_gender_valid_person_succeeds(self):
+        """Updating gender for a valid person should succeed."""
+        with TEST_APP.app_context():
+            from gramps_webapi.api.util import get_db_outside_request
+            from gramps.gen.db import DbTxn
+
+            db = get_db_outside_request(TEST_TREE, True, False, "test_user")
+            person = db.get_person_from_gramps_id("I0001")
+            self.assertIsNotNone(person, "Expected I0001 to exist in example DB")
+            original_gender = person.get_gender()
+            db.close()
+
+        result = self._update_person_field(gramps_id="I0001", field="gender", value=1)
+        self.assertIn("Successfully updated gender for I0001", result)
+
+        with TEST_APP.app_context():
+            from gramps_webapi.api.util import get_db_outside_request
+            from gramps.gen.db import DbTxn
+
+            db = get_db_outside_request(TEST_TREE, True, False, "test_user")
+            person = db.get_person_from_gramps_id("I0001")
+            self.assertEqual(person.get_gender(), 1)
+
+            with DbTxn("Test: restore original gender", db) as trans:
+                person.set_gender(original_gender)
+                db.commit_person(person, trans)
+            db.close()
+
+    def test_invalid_field_returns_error(self):
+        """Invalid field name should return an error with allowed fields."""
+        result = self._update_person_field(
+            gramps_id="I0001",
+            field="nickname",
+            value="Joe",
+        )
+
+        self.assertIn("Invalid field", result)
+        self.assertIn("Allowed fields: gender", result)
+
+    def test_invalid_gramps_id_returns_not_found(self):
+        """Unknown Gramps ID should return not found error."""
+        result = self._update_person_field(
+            gramps_id="I_DOES_NOT_EXIST",
+            field="gender",
+            value=1,
+        )
+
+        self.assertIn("No person found with Gramps ID I_DOES_NOT_EXIST", result)
+
+    def test_invalid_gender_value_returns_validation_error(self):
+        """Out-of-range gender values should be rejected."""
+        result = self._update_person_field(
+            gramps_id="I0001",
+            field="gender",
+            value=5,
+        )
+
+        self.assertIn("Invalid gender value", result)
+
+    def test_transaction_message_has_ai_prefix(self):
+        """Transaction should be labeled with 'AI:' prefix."""
+        fake_person = MagicMock()
+        fake_person.private = False
+        fake_db = MagicMock()
+        fake_db.get_person_from_gramps_id.return_value = fake_person
+
+        fake_tx = MagicMock()
+        fake_ctx_manager = MagicMock()
+        fake_ctx_manager.__enter__.return_value = fake_tx
+        fake_ctx_manager.__exit__.return_value = False
+
+        with patch("gramps_webapi.api.llm.tools.get_db_outside_request", return_value=fake_db):
+            with patch("gramps.gen.db.DbTxn", return_value=fake_ctx_manager) as mock_db_txn:
+                result = self._update_person_field(
+                    gramps_id="I0001",
+                    field="gender",
+                    value=1,
+                    reason="test reason",
+                )
+
+        self.assertIn("Successfully updated gender for I0001", result)
+        mock_db_txn.assert_called_once()
+        tx_message = mock_db_txn.call_args[0][0]
+        self.assertTrue(tx_message.startswith("AI:"))
+
+
+class TestAddEventToPersonTool(unittest.TestCase):
+    """Tests for add_event_to_person tool."""
+
+    def setUp(self):
+        self.ctx = MagicMock()
+        self.ctx.deps = AgentDeps(
+            tree=TEST_TREE,
+            include_private=True,
+            max_context_length=50000,
+            user_id="test_user",
+        )
+
+    def _add_event_to_person(self, **kwargs):
+        with TEST_APP.app_context():
+            return add_event_to_person(self.ctx, **kwargs)
+
+    def _find_person_without_birth(self):
+        from gramps_webapi.api.util import get_db_outside_request
+
+        db = get_db_outside_request(TEST_TREE, True, True, "test_user")
+        selected = None
+        for handle in db.get_person_handles():
+            person = db.get_person_from_handle(handle)
+            if not person.get_birth_ref():
+                selected = (person.gramps_id, person.handle)
+                break
+        db.close()
+        return selected
+
+    def _find_person_with_birth(self):
+        from gramps_webapi.api.util import get_db_outside_request
+
+        db = get_db_outside_request(TEST_TREE, True, True, "test_user")
+        selected = None
+        for handle in db.get_person_handles():
+            person = db.get_person_from_handle(handle)
+            if person.get_birth_ref():
+                selected = (person.gramps_id, person.handle)
+                break
+        db.close()
+        return selected
+
+    def test_create_birth_event_for_person_without_one_succeeds(self):
+        """Creating a birth event should succeed and link it to the person."""
+        candidate = self._find_person_without_birth()
+        self.assertIsNotNone(candidate, "Expected a person without birth event")
+        gramps_id, handle = candidate
+
+        result = self._add_event_to_person(
+            gramps_id=gramps_id,
+            event_type="Birth",
+            year=1850,
+        )
+        self.assertIn("Successfully added Birth event", result)
+
+        with TEST_APP.app_context():
+            from gramps_webapi.api.util import get_db_outside_request
+
+            db = get_db_outside_request(TEST_TREE, True, True, "test_user")
+            person = db.get_person_from_handle(handle)
+            birth_ref = person.get_birth_ref()
+            self.assertIsNotNone(birth_ref, "Birth event should be linked to person")
+
+            event = db.get_event_from_handle(birth_ref.ref)
+            self.assertIsNotNone(event, "Birth event handle should resolve to an event")
+            self.assertEqual(event.get_type().string, "Birth")
+            self.assertEqual(event.get_date_object().get_year(), 1850)
+            db.close()
+
+    def test_duplicate_birth_event_returns_error(self):
+        """Adding a duplicate birth event should be blocked."""
+        candidate = self._find_person_with_birth()
+        self.assertIsNotNone(candidate, "Expected a person with existing birth event")
+        gramps_id, _ = candidate
+
+        result = self._add_event_to_person(
+            gramps_id=gramps_id,
+            event_type="Birth",
+            year=1851,
+        )
+        self.assertIn("already has a birth event", result)
+
+    def test_invalid_event_type_returns_error(self):
+        """Invalid event types should return a validation error."""
+        result = self._add_event_to_person(
+            gramps_id="I0001",
+            event_type="Graduation",
+            year=1900,
+        )
+        self.assertIn("Invalid event type", result)
+        self.assertIn("Valid event types: Birth, Death", result)
+
+    def test_transaction_message_has_ai_prefix(self):
+        """Transaction should be labeled with 'AI:' prefix."""
+        fake_person = MagicMock()
+        fake_person.private = False
+        fake_person.get_birth_ref.return_value = None
+        fake_person.get_death_ref.return_value = None
+        fake_db = MagicMock()
+        fake_db.get_person_from_gramps_id.return_value = fake_person
+
+        fake_tx = MagicMock()
+        fake_ctx_manager = MagicMock()
+        fake_ctx_manager.__enter__.return_value = fake_tx
+        fake_ctx_manager.__exit__.return_value = False
+
+        with patch("gramps_webapi.api.llm.tools.get_db_outside_request", return_value=fake_db):
+            with patch("gramps.gen.db.DbTxn", return_value=fake_ctx_manager) as mock_db_txn:
+                result = self._add_event_to_person(
+                    gramps_id="I0001",
+                    event_type="Birth",
+                    year=1900,
+                )
+
+        self.assertIn("Successfully added Birth event", result)
+        mock_db_txn.assert_called_once()
+        tx_message = mock_db_txn.call_args[0][0]
+        self.assertTrue(tx_message.startswith("AI:"))
 
 
 if __name__ == "__main__":
