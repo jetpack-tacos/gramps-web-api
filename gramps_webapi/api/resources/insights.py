@@ -20,7 +20,7 @@
 """AI person insight endpoints."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import current_app
 from flask_jwt_extended import get_jwt_identity
@@ -388,10 +388,6 @@ class InsightResource(ProtectedResource):
             person_context, person_handle = _build_person_context(
                 gramps_id, db_handle, include_private
             )
-        except Exception as e:
-            if db_handle:
-                db_handle.close()
-            raise
         finally:
             if db_handle:
                 db_handle.close()
@@ -416,7 +412,7 @@ class InsightResource(ProtectedResource):
             existing.content = insight_text
             existing.generated_by = user_id
             existing.model = model_name
-            existing.created_at = datetime.utcnow()
+            existing.created_at = datetime.now(timezone.utc)
             insight_id = existing.id
         else:
             insight_id = str(uuid.uuid4())
@@ -440,7 +436,7 @@ class InsightResource(ProtectedResource):
                 "gramps_id": gramps_id,
                 "content": insight_text,
                 "model": model_name,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
         }
 

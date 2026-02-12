@@ -104,6 +104,7 @@ def _apply_gramps_filter(
     max_results: int,
     empty_message: str = "No results found matching the filter criteria.",
     show_relation_with: str = "",
+    combine_function: str = "and",
 ) -> str:
     """Apply a Gramps filter and return formatted results.
 
@@ -142,7 +143,7 @@ def _apply_gramps_filter(
 
         filter_dict: dict[str, Any] = {"rules": rules}
         if len(rules) > 1:
-            filter_dict["function"] = "and"
+            filter_dict["function"] = combine_function
 
         filter_rules = json.dumps(filter_dict)
         logger.debug("%s filter rules: %s", namespace, filter_rules)
@@ -156,7 +157,6 @@ def _apply_gramps_filter(
         )
 
         if not matching_handles:
-            db_handle.close()
             return empty_message
 
         total_matches = len(matching_handles)
@@ -250,7 +250,6 @@ def _apply_gramps_filter(
                 continue
 
         if not context_parts:
-            db_handle.close()
             return f"{empty_message} (or all results are private)."
 
         result = "\n\n".join(context_parts)
@@ -269,25 +268,25 @@ def _apply_gramps_filter(
             len(result),
         )
 
-        db_handle.close()
         return result
 
     except Exception as e:  # pylint: disable=broad-except
         logger.error("Error filtering %ss: %s", namespace.lower(), e)
+        return f"Error filtering {namespace.lower()}s: {str(e)}"
+    finally:
         if db_handle is not None:
             try:
                 db_handle.close()
             except Exception:  # pylint: disable=broad-except
                 pass
-        return f"Error filtering {namespace.lower()}s: {str(e)}"
 
 
 def log_tool_call(func):
     """Decorator to log tool usage."""
-    logger = get_logger()
 
     @wraps(func)
     def wrapper(*args, **kwargs):
+        logger = get_logger()
         logger.debug("Tool called: %s", func.__name__)
         return func(*args, **kwargs)
 
@@ -541,153 +540,15 @@ def filter_people(
         )
 
     if combine_filters.lower() == "or":
-        # For OR logic, we need to update the filter_dict in _apply_gramps_filter
-        # Pass it as part of the rules structure
-        filter_dict: dict[str, Any] = {"rules": rules, "function": "or"}
-        filter_rules = json.dumps(filter_dict)
-        logger.debug("Built filter rules: %s", filter_rules)
-
-        db_handle = None
-        try:
-            db_handle = get_db_outside_request(
-                tree=ctx.deps.tree,
-                view_private=ctx.deps.include_private,
-                readonly=True,
-                user_id=ctx.deps.user_id,
-            )
-
-            args = {"rules": filter_rules}
-            try:
-                matching_handles = apply_filter(
-                    db_handle=db_handle,
-                    args=args,
-                    namespace="Person",
-                    handles=None,
-                )
-            except Exception as filter_error:
-                logger.error(
-                    "Filter validation failed: %s. Filter rules: %r",
-                    filter_error,
-                    filter_rules,
-                )
-                db_handle.close()
-                raise
-
-            if not matching_handles:
-                db_handle.close()
-                return "No people found matching the filter criteria."
-
-            matching_handles = matching_handles[:max_results]
-
-            context_parts: list[str] = []
-            max_length = ctx.deps.max_context_length
-            per_item_max = 10000  # Maximum chars per individual item
-            current_length = 0
-
-            # Get the anchor person for relationship calculation if requested
-            anchor_person = None
-            if show_relation_with:
-                try:
-                    anchor_person = db_handle.get_person_from_gramps_id(
-                        show_relation_with
-                    )
-                    if not anchor_person:
-                        logger.warning(
-                            "Anchor person %s not found for relationship calculation",
-                            show_relation_with,
-                        )
-                except Exception as e:  # pylint: disable=broad-except
-                    logger.warning(
-                        "Error fetching anchor person %s: %s", show_relation_with, e
-                    )
-
-            for handle in matching_handles:
-                try:
-                    person = db_handle.get_person_from_handle(handle)
-
-                    if not ctx.deps.include_private and person.private:
-                        continue
-
-                    obj_dict = obj_strings_from_object(
-                        db_handle=db_handle,
-                        class_name="Person",
-                        obj=person,
-                        semantic=True,
-                    )
-
-                    if obj_dict:
-                        content = (
-                            obj_dict["string_all"]
-                            if ctx.deps.include_private
-                            else obj_dict["string_public"]
-                        )
-
-                        # Add relationship prefix if anchor person is set
-                        if anchor_person:
-                            rel_prefix = _get_relationship_prefix(
-                                db_handle, anchor_person, person, logger
-                            )
-                            content = rel_prefix + content
-
-                        # Truncate individual items if they're too long
-                        if len(content) > per_item_max:
-                            content = (
-                                content[:per_item_max]
-                                + "\n\n[Content truncated due to length...]"
-                            )
-                            logger.debug(
-                                "Truncated Person content from %d to %d chars",
-                                len(content) - per_item_max,
-                                per_item_max,
-                            )
-
-                        if current_length + len(content) > max_length:
-                            logger.debug(
-                                "Reached max context length (%d chars), stopping at %d results",
-                                max_length,
-                                len(context_parts),
-                            )
-                            break
-
-                        context_parts.append(content)
-                        current_length += len(content) + 2
-
-                except Exception as e:  # pylint: disable=broad-except
-                    logger.warning("Error processing person %s: %s", handle, e)
-                    continue
-
-            if not context_parts:
-                db_handle.close()
-                return "No people found matching the filter criteria (or all results are private)."
-
-            result = "\n\n".join(context_parts)
-
-            total_matches = len(matching_handles)
-            returned_count = len(context_parts)
-
-            if returned_count < total_matches:
-                result += f"\n\n---\nShowing {returned_count} of {total_matches} matching people. Use max_results parameter to see more."
-            elif total_matches == max_results:
-                result += f"\n\n---\nShowing {returned_count} people (limit reached). There may be more matches."
-
-            logger.debug(
-                "Tool filter_people returned %d results (%d chars)",
-                len(context_parts),
-                len(result),
-            )
-
-            db_handle.close()
-
-            return result
-
-        except Exception as e:  # pylint: disable=broad-except
-            logger.error("Error filtering people: %s", e)
-            if db_handle is not None:
-                try:
-                    db_handle.close()
-                except Exception:  # pylint: disable=broad-except
-                    pass
-            return f"Error filtering people: {str(e)}"
+        return _apply_gramps_filter(
+            ctx=ctx,
+            namespace="Person",
+            rules=rules,
+            max_results=max_results,
+            empty_message="No people found matching the filter criteria.",
+            show_relation_with=show_relation_with,
+            combine_function="or",
+        )
 
     # Use the common filter helper for AND logic
     return _apply_gramps_filter(
@@ -1060,7 +921,7 @@ def get_tree_statistics(ctx: RunContext[AgentDeps]) -> str:
         place_count = db_handle.get_number_of_places()
         source_count = db_handle.get_number_of_sources()
 
-        stats.append(f"**Total Records**: {person_count} people, {family_count} families, {event_count} events, {place_count} places, {source_count} sources")
+        stats.append(f"Total Records: {person_count} people, {family_count} families, {event_count} events, {place_count} places, {source_count} sources")
 
         # Surname frequency
         surname_freq = {}
@@ -1074,7 +935,7 @@ def get_tree_statistics(ctx: RunContext[AgentDeps]) -> str:
 
         if surname_freq:
             top_surnames = sorted(surname_freq.items(), key=lambda x: x[1], reverse=True)[:10]
-            stats.append("\n**Top Surnames**: " + ", ".join([f"{name} ({count})" for name, count in top_surnames]))
+            stats.append("\nTop Surnames: " + ", ".join([f"{name} ({count})" for name, count in top_surnames]))
 
         # Date ranges from birth/death events
         birth_years = []
@@ -1095,9 +956,9 @@ def get_tree_statistics(ctx: RunContext[AgentDeps]) -> str:
                     death_years.append(year)
 
         if birth_years:
-            stats.append(f"\n**Birth Years Range**: {min(birth_years)} to {max(birth_years)}")
+            stats.append(f"\nBirth Years Range: {min(birth_years)} to {max(birth_years)}")
         if death_years:
-            stats.append(f"\n**Death Years Range**: {min(death_years)} to {max(death_years)}")
+            stats.append(f"\nDeath Years Range: {min(death_years)} to {max(death_years)}")
 
         # Average lifespan (only for people with both birth and death dates)
         lifespans = []
@@ -1124,7 +985,7 @@ def get_tree_statistics(ctx: RunContext[AgentDeps]) -> str:
 
         if lifespans:
             avg_lifespan = sum(lifespans) / len(lifespans)
-            stats.append(f"\n**Average Lifespan**: {avg_lifespan:.1f} years (based on {len(lifespans)} people with both birth and death dates)")
+            stats.append(f"\nAverage Lifespan: {avg_lifespan:.1f} years (based on {len(lifespans)} people with both birth and death dates)")
 
         # Average family size
         children_counts = []
@@ -1137,7 +998,7 @@ def get_tree_statistics(ctx: RunContext[AgentDeps]) -> str:
         if children_counts:
             avg_children = sum(children_counts) / len(children_counts)
             max_children = max(children_counts)
-            stats.append(f"\n**Average Family Size**: {avg_children:.1f} children per family (max: {max_children})")
+            stats.append(f"\nAverage Family Size: {avg_children:.1f} children per family (max: {max_children})")
 
         # Top places
         place_freq = {}
@@ -1155,7 +1016,7 @@ def get_tree_statistics(ctx: RunContext[AgentDeps]) -> str:
 
         if place_freq:
             top_places = sorted(place_freq.items(), key=lambda x: x[1], reverse=True)[:10]
-            stats.append("\n**Top Places**: " + ", ".join([f"{name} ({count} events)" for name, count in top_places]))
+            stats.append("\nTop Places: " + ", ".join([f"{name} ({count} events)" for name, count in top_places]))
 
         db_handle.close()
         return "\n".join(stats)

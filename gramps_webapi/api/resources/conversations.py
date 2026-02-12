@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask_jwt_extended import get_jwt_identity
 from webargs import fields
@@ -141,8 +141,8 @@ def create_conversation(user_id: str, tree: str, title: str | None = None) -> Co
         user_id=user_id,
         tree=tree,
         title=title,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     user_db.session.add(conv)
     user_db.session.commit()
@@ -162,14 +162,14 @@ def add_message(
         role=role,
         content=content,
         metadata_json=json.dumps(metadata) if metadata else None,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     user_db.session.add(msg)
 
     # Update conversation's updated_at
     conv = user_db.session.query(Conversation).filter_by(id=conversation_id).first()
     if conv:
-        conv.updated_at = datetime.utcnow()
+        conv.updated_at = datetime.now(timezone.utc)
 
     user_db.session.commit()
     return msg

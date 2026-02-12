@@ -83,6 +83,13 @@ def extract_metadata_from_result(response: types.GenerateContentResponse) -> dic
     return metadata
 
 
+def extract_text_from_response(response: types.GenerateContentResponse) -> str:
+    """Extract the text content from a Gemini response."""
+    if not response.candidates or not response.candidates[0].content.parts:
+        return ""
+    return "".join(part.text for part in response.candidates[0].content.parts if part.text)
+
+
 def _convert_history_to_gemini(history: list[dict]) -> list[types.Content]:
     """Convert client-sent history to Gemini Content objects.
 
@@ -163,21 +170,17 @@ def answer_with_agent(
             system_prompt_override=system_prompt_override,
             history=gemini_history,
         )
-        response_text = ""
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.text:
-                    response_text += part.text
+        response_text = extract_text_from_response(response)
         logger.info("Gemini response (%d chars): %s", len(response_text), response_text[:500])
         if len(response_text) > 500:
             logger.info("Full Gemini response: %s", response_text)
         return response
     except ValueError as e:
         logger.error("Gemini configuration error: %s", e)
-        abort_with_message(500, "Error communicating with the AI model")
+        raise RuntimeError("Error communicating with the AI model") from e
     except Exception as e:
         logger.error("Unexpected error in Gemini agent: %s", e)
-        abort_with_message(500, "Unexpected error.")
+        raise RuntimeError("Unexpected error.") from e
 
 
 def generate_insight(
@@ -229,11 +232,7 @@ def generate_insight(
             ),
         )
 
-        response_text = ""
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.text:
-                    response_text += part.text
+        response_text = extract_text_from_response(response)
 
         metadata = extract_metadata_from_result(response)
         logger.debug(
@@ -349,14 +348,13 @@ def generate_nuggets(
             ),
         )
 
-        response_text = ""
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.text:
-                    response_text += part.text
+        response_text = extract_text_from_response(response)
 
         metadata = extract_metadata_from_result(response)
         logger.info("Nuggets generated (%d chars): %s", len(response_text), response_text[:500])
+
+        # Sanitize the response
+        response_text = sanitize_answer(response_text)
 
         return response_text, metadata
 
@@ -471,8 +469,8 @@ def generate_blog_post(
     # Score findings: prefer those mentioning unfeatured people or events
     def finding_score(finding):
         ids_in_finding = set(
-            _re.findall(r'\b(I\d{4,5})\b', finding)
-            + _re.findall(r'/person/(I\d{4,5})', finding)
+            _re.findall(r'\b(I\d+)\b', finding)
+            + _re.findall(r'/person/(I\d+)', finding)
         )
         # Penalize findings where all people are already featured
         if ids_in_finding and ids_in_finding.issubset(featured):
@@ -498,8 +496,8 @@ def generate_blog_post(
     selected_text = "\n\n".join(selected_findings)
     # Match both bare IDs (I0001) and markdown links (/person/I0001)
     gramps_ids = list(set(
-        _re.findall(r'\b(I\d{4,5})\b', selected_text)
-        + _re.findall(r'/person/(I\d{4,5})', selected_text)
+        _re.findall(r'\b(I\d+)\b', selected_text)
+        + _re.findall(r'/person/(I\d+)', selected_text)
     ))
     random.shuffle(gramps_ids)
 
@@ -548,11 +546,7 @@ def generate_blog_post(
             ),
         )
 
-        response_text = ""
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.text:
-                    response_text += part.text
+        response_text = extract_text_from_response(response)
 
         metadata = extract_metadata_from_result(response)
         logger.info("Blog post generated (%d chars): %s", len(response_text), response_text[:300])
@@ -664,6 +658,34 @@ def generate_this_day(
 
         logger.info("Gathering events for month=%d, day=%d", month, day)
 
+        # Pre-build reverse index: event_handle -> [(name, gramps_id), ...]
+        event_to_people = {}
+        for ph in db_handle.iter_person_handles():
+            p = db_handle.get_person_from_handle(ph)
+            if not include_private and p.private:
+                continue
+            for eref in p.get_event_ref_list():
+                event_to_people.setdefault(eref.ref, []).append(
+                    (p.get_primary_name().get_name(), p.get_gramps_id())
+                )
+
+        event_to_family_people = {}
+        for fh in db_handle.iter_family_handles():
+            fam = db_handle.get_family_from_handle(fh)
+            if not include_private and fam.private:
+                continue
+            for eref in fam.get_event_ref_list():
+                people = []
+                for spouse_handle in [fam.get_father_handle(), fam.get_mother_handle()]:
+                    if spouse_handle:
+                        spouse = db_handle.get_person_from_handle(spouse_handle)
+                        if include_private or not spouse.private:
+                            people.append(
+                                (spouse.get_primary_name().get_name(), spouse.get_gramps_id())
+                            )
+                if people:
+                    event_to_family_people.setdefault(eref.ref, []).extend(people)
+
         # Collect all events matching this month/day
         matching_events = []
 
@@ -686,47 +708,14 @@ def generate_this_day(
                 person_names = []
                 person_ids = []
 
-                # Check all people for references to this event
-                for person_handle in db_handle.iter_person_handles():
-                    person = db_handle.get_person_from_handle(person_handle)
-                    if not include_private and person.private:
-                        continue
+                # Look up people for this event from pre-built indexes
+                for name, gid in event_to_people.get(event_handle, []):
+                    person_names.append(name)
+                    person_ids.append(gid)
 
-                    # Check if this event is referenced by the person
-                    event_refs = person.get_event_ref_list()
-                    for event_ref in event_refs:
-                        if event_ref.ref == event_handle:
-                            name = person.get_primary_name().get_name()
-                            gramps_id = person.get_gramps_id()
-                            person_names.append(name)
-                            person_ids.append(gramps_id)
-                            break
-
-                # Also check families for this event (marriages, etc.)
-                for family_handle in db_handle.iter_family_handles():
-                    family = db_handle.get_family_from_handle(family_handle)
-                    if not include_private and family.private:
-                        continue
-
-                    family_event_refs = family.get_event_ref_list()
-                    for event_ref in family_event_refs:
-                        if event_ref.ref == event_handle:
-                            # Add father and mother
-                            father_handle = family.get_father_handle()
-                            mother_handle = family.get_mother_handle()
-
-                            if father_handle:
-                                father = db_handle.get_person_from_handle(father_handle)
-                                if include_private or not father.private:
-                                    person_names.append(father.get_primary_name().get_name())
-                                    person_ids.append(father.get_gramps_id())
-
-                            if mother_handle:
-                                mother = db_handle.get_person_from_handle(mother_handle)
-                                if include_private or not mother.private:
-                                    person_names.append(mother.get_primary_name().get_name())
-                                    person_ids.append(mother.get_gramps_id())
-                            break
+                for name, gid in event_to_family_people.get(event_handle, []):
+                    person_names.append(name)
+                    person_ids.append(gid)
 
                 if person_names:  # Only include events with associated people
                     matching_events.append({
@@ -776,11 +765,7 @@ def generate_this_day(
             ),
         )
 
-        response_text = ""
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.text:
-                    response_text += part.text
+        response_text = extract_text_from_response(response)
 
         metadata = extract_metadata_from_result(response)
         logger.info("This Day digest generated (%d chars): %s", len(response_text), response_text[:300])

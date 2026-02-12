@@ -83,9 +83,7 @@ def run_task(task: Task, **kwargs) -> Union[AsyncResult, Any]:
     try:
         return task.delay(**kwargs)
     except Exception as exc:
-        import traceback
-        with open('/app/media/debug.log', 'a') as f:
-            f.write(f"ERROR in run_task: {str(exc)}\n{traceback.format_exc()}\n")
+        current_app.logger.error(f"Error dispatching task: {exc}", exc_info=True)
         raise exc
 
 
@@ -661,6 +659,7 @@ def process_chat(
     from gramps_webapi.api.llm import (
         answer_with_agent,
         extract_metadata_from_result,
+        extract_text_from_response,
         sanitize_answer,
     )
     from gramps_webapi.api.resources.conversations import (
@@ -705,11 +704,7 @@ def process_chat(
         raise RuntimeError(f"AI agent error: {str(e)}") from e
 
     # Extract text from Gemini response
-    response_text = ""
-    if response.candidates and response.candidates[0].content.parts:
-        for part in response.candidates[0].content.parts:
-            if part.text:
-                response_text += part.text
+    response_text = extract_text_from_response(response)
 
     response_text = sanitize_answer(response_text)
 
