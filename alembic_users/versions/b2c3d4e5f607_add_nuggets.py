@@ -1,6 +1,6 @@
 """add nuggets table for interesting fact nuggets on home page
 
-Revision ID: b2c3d4e5f6g7
+Revision ID: b2c3d4e5f607
 Revises: a1b2c3d4e5f6
 Create Date: 2026-02-10 14:00:00.000000
 
@@ -11,7 +11,7 @@ from gramps_webapi.auth.sql_guid import GUID
 
 
 # revision identifiers, used by Alembic.
-revision = 'b2c3d4e5f6g7'
+revision = 'b2c3d4e5f607'
 down_revision = 'a1b2c3d4e5f6'
 branch_labels = None
 depends_on = None

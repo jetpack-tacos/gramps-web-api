@@ -7,6 +7,8 @@
 
 """Batch geocoding functions using Nominatim."""
 
+import logging
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -19,7 +21,9 @@ from gramps.gen.db.base import DbReadBase
 from gramps.gen.lib import Place
 
 from .tasks import AsyncResult, run_task
-from .util import get_db_handle, close_db
+from .util import get_db_outside_request, close_db
+
+logger = logging.getLogger(__name__)
 
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -27,40 +31,119 @@ USER_AGENT = "GenAI-Genealogy/1.0 (batch geocoding for family tree)"
 RATE_LIMIT_SECONDS = 1.1  # Slightly over 1 second to be safe
 
 
-def geocode_place_name(place_name: str) -> Optional[Tuple[float, float]]:
+def _nominatim_query(query: str) -> Optional[Tuple[float, float]]:
     """
-    Geocode a place name using Nominatim.
-    
-    Args:
-        place_name: The place name to geocode (e.g., "Norwich, Connecticut, USA")
-        
+    Make a single Nominatim API call.
+
     Returns:
-        Tuple of (latitude, longitude) or None if not found
+        Tuple of (latitude, longitude) or None if not found.
     """
-    if not place_name or not place_name.strip():
+    if not query or not query.strip():
         return None
-    
+
     params = urllib.parse.urlencode({
-        'q': place_name,
+        'q': query,
         'format': 'json',
         'limit': 1,
     })
-    
+
     url = f"{NOMINATIM_URL}?{params}"
-    
+
     request = urllib.request.Request(
         url,
         headers={'User-Agent': USER_AGENT}
     )
-    
+
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             data = json.loads(response.read().decode('utf-8'))
             if data and len(data) > 0:
                 return (float(data[0]['lat']), float(data[0]['lon']))
     except Exception as e:
-        current_app.logger.warning(f"Geocoding failed for '{place_name}': {e}")
-    
+        logger.warning(f"  -> Nominatim request error for '{query}': {e}")
+
+    return None
+
+
+def _clean_place_name(place_name: str) -> str:
+    """
+    Clean a place name to improve geocoding success.
+
+    Strips apartment/unit numbers, PO Box prefixes, zip codes,
+    suite numbers, and other noise that confuses Nominatim.
+    """
+    cleaned = place_name
+
+    # Strip apartment/unit/suite designators: "Apt 4", "# 3", "Unit 2B", "Suite 100"
+    cleaned = re.sub(r',?\s*(?:Apt|Unit|Suite|Ste)\.?\s*#?\s*\w+', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r',?\s*#\s*\d+\w*', '', cleaned)
+
+    # Strip zip codes: "60090-5922" or "53024"
+    cleaned = re.sub(r',?\s*\d{5}(-\d{4})?', '', cleaned)
+
+    # Strip "PO Box NNN" — replace entire PO Box reference, keep the city
+    cleaned = re.sub(r'^\d*\s*P\.?O\.?\s*Box\s*\d*\s*,?\s*', '', cleaned, flags=re.IGNORECASE)
+
+    # Strip "No. 57" style house numbers in non-address contexts
+    cleaned = re.sub(r'\s+No\.?\s*\d+', '', cleaned)
+
+    # Collapse extra commas and whitespace
+    cleaned = re.sub(r'\s*,\s*,\s*', ', ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' ,')
+
+    return cleaned
+
+
+def geocode_place_name(place_name: str) -> Optional[Tuple[float, float]]:
+    """
+    Geocode a place name using Nominatim with progressive fallback.
+
+    Strategy:
+    1. Try the full name as-is.
+    2. Try a cleaned version (strip apt numbers, zip codes, PO Box, etc.).
+    3. Progressively drop the first comma-separated part and retry,
+       so "Business Name, City, State" falls back to "City, State".
+
+    Each attempt respects the Nominatim rate limit.
+
+    Returns:
+        Tuple of (latitude, longitude) or None if all attempts fail.
+    """
+    if not place_name or not place_name.strip():
+        return None
+
+    # Attempt 1: exact name as-is
+    result = _nominatim_query(place_name)
+    if result:
+        logger.info(f"  -> Found: ({result[0]}, {result[1]})")
+        return result
+
+    # Attempt 2: cleaned name (strip apt, zip, PO Box, etc.)
+    cleaned = _clean_place_name(place_name)
+    if cleaned and cleaned != place_name:
+        time.sleep(RATE_LIMIT_SECONDS)
+        result = _nominatim_query(cleaned)
+        if result:
+            logger.info(f"  -> Found (cleaned '{cleaned}'): ({result[0]}, {result[1]})")
+            return result
+
+    # Attempt 3+: progressively drop the first part
+    # "Business Name, City, State, Country" -> "City, State, Country" -> "State, Country"
+    working = cleaned or place_name
+    parts = [p.strip() for p in working.split(',')]
+
+    # Only try fallback if there are multiple parts, and stop when we're
+    # down to a single part (don't geocode just "Wisconsin")
+    while len(parts) > 2:
+        parts = parts[1:]
+        fallback = ', '.join(parts)
+        time.sleep(RATE_LIMIT_SECONDS)
+        result = _nominatim_query(fallback)
+        if result:
+            logger.info(f"  -> Found (fallback '{fallback}'): ({result[0]}, {result[1]})")
+            return result
+
+    logger.warning(f"  -> All attempts failed for '{place_name}'")
     return None
 
 
@@ -124,13 +207,17 @@ def geocode_all_places_task(
     Returns:
         Dict with geocoded count and error count
     """
-    from ..dbmanager import WebDbManager
     from gramps.gen.db import DbTxn
-    
-    # Open database with write access
-    dbmgr = WebDbManager(tree)
-    db_handle = dbmgr.get_db(readonly=False)
-    
+
+    logger.info("=" * 60)
+    logger.info(f"BATCH GEOCODING STARTED - tree={tree}, user={user_id}, skip_existing={skip_existing}")
+    logger.info("=" * 60)
+
+    # Open database with write access (same pattern as all other Celery tasks)
+    db_handle = get_db_outside_request(
+        tree=tree, view_private=True, readonly=False, user_id=user_id
+    )
+
     try:
         # Get all places
         places = list(db_handle.iter_places())
@@ -138,7 +225,10 @@ def geocode_all_places_task(
         geocoded = 0
         skipped = 0
         errors = 0
-        
+        error_names = []
+
+        logger.info(f"Found {total} places in database")
+
         for i, place in enumerate(places):
             # Update progress
             self.update_state(
@@ -151,22 +241,25 @@ def geocode_all_places_task(
                     'errors': errors,
                 }
             )
-            
+
             # Skip if already has coordinates
             if skip_existing and place.lat and place.long:
                 skipped += 1
                 continue
-            
+
             # Build place name
             place_name = get_place_display_name(db_handle, place)
-            
+
             if not place_name:
+                logger.warning(f"[{i+1}/{total}] Skipping place {place.gramps_id} — no name")
                 errors += 1
                 continue
-            
-            # Geocode
+
+            logger.info(f"[{i+1}/{total}] Geocoding: '{place_name}' (ID: {place.gramps_id})")
+
+            # Geocode (includes its own rate limiting for fallback retries)
             coords = geocode_place_name(place_name)
-            
+
             if coords:
                 lat, lon = coords
                 # Update place with coordinates
@@ -177,10 +270,21 @@ def geocode_all_places_task(
                 geocoded += 1
             else:
                 errors += 1
-            
-            # Rate limiting
+                error_names.append(place_name)
+
+            # Rate limiting between places (the first Nominatim call for the next place)
             time.sleep(RATE_LIMIT_SECONDS)
-        
+
+        logger.info("=" * 60)
+        logger.info(f"BATCH GEOCODING COMPLETE")
+        logger.info(f"  Total:    {total}")
+        logger.info(f"  Updated:  {geocoded}")
+        logger.info(f"  Skipped:  {skipped} (already had coordinates)")
+        logger.info(f"  Errors:   {errors}")
+        if error_names:
+            logger.info(f"  Failed places: {error_names[:20]}{'...' if len(error_names) > 20 else ''}")
+        logger.info("=" * 60)
+
         return {
             'status': 'complete',
             'total': total,
@@ -188,7 +292,11 @@ def geocode_all_places_task(
             'skipped': skipped,
             'errors': errors,
         }
-        
+
+    except Exception as e:
+        logger.error(f"BATCH GEOCODING FAILED: {e}", exc_info=True)
+        raise
+
     finally:
         close_db(db_handle)
 
