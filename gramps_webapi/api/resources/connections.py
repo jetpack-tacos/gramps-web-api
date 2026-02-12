@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 
 from flask import current_app
 from flask_jwt_extended import get_jwt_identity
+from gramps.gen.errors import HandleError
 
 from ..auth import has_permissions, require_permissions
 from ..llm import generate_person_connections
@@ -53,7 +54,16 @@ def _person_from_gramps_id_or_404(db_handle, gramps_id: str):
     return person
 
 
-def _get_immediate_family_ids(db_handle, person) -> set[str]:
+def _safe_get_person(db_handle, handle):
+    if not handle:
+        return None
+    try:
+        return db_handle.get_person_from_handle(handle)
+    except HandleError:
+        return None
+
+
+def _get_immediate_family_ids(db_handle, person, include_private: bool) -> set[str]:
     """Collect this person's immediate family Gramps IDs."""
     ids = {person.gramps_id}
     person_handle = person.handle
@@ -64,16 +74,15 @@ def _get_immediate_family_ids(db_handle, person) -> set[str]:
             continue
 
         for parent_handle in [family.father_handle, family.mother_handle]:
-            if parent_handle:
-                parent = db_handle.get_person_from_handle(parent_handle)
-                if parent:
-                    ids.add(parent.gramps_id)
+            parent = _safe_get_person(db_handle, parent_handle)
+            if parent and (include_private or not parent.private):
+                ids.add(parent.gramps_id)
 
         for child_ref in family.child_ref_list:
             if child_ref.ref == person_handle:
                 continue
-            sibling = db_handle.get_person_from_handle(child_ref.ref)
-            if sibling:
+            sibling = _safe_get_person(db_handle, child_ref.ref)
+            if sibling and (include_private or not sibling.private):
                 ids.add(sibling.gramps_id)
 
     for family_handle in person.family_list:
@@ -87,14 +96,13 @@ def _get_immediate_family_ids(db_handle, person) -> set[str]:
         elif family.mother_handle == person_handle:
             spouse_handle = family.father_handle
 
-        if spouse_handle:
-            spouse = db_handle.get_person_from_handle(spouse_handle)
-            if spouse:
-                ids.add(spouse.gramps_id)
+        spouse = _safe_get_person(db_handle, spouse_handle)
+        if spouse and (include_private or not spouse.private):
+            ids.add(spouse.gramps_id)
 
         for child_ref in family.child_ref_list:
-            child = db_handle.get_person_from_handle(child_ref.ref)
-            if child:
+            child = _safe_get_person(db_handle, child_ref.ref)
+            if child and (include_private or not child.private):
                 ids.add(child.gramps_id)
 
     return ids
@@ -138,9 +146,23 @@ class PersonConnectionsResource(ProtectedResource):
                 readonly=True,
                 user_id=user_id,
             )
-            person = _person_from_gramps_id_or_404(db_handle, gramps_id)
+            person = db_handle.get_person_from_gramps_id(gramps_id)
+
+            # Fallback lookup to avoid false 404 from restricted view modes.
+            if not person:
+                db_handle.close()
+                db_handle = get_db_outside_request(
+                    tree=tree,
+                    view_private=True,
+                    readonly=True,
+                    user_id=user_id,
+                )
+                person = _person_from_gramps_id_or_404(db_handle, gramps_id)
+                if person.private and not include_private:
+                    abort_with_message(403, "Person is private")
+
             person_handle = person.handle
-            scope_ids = _get_immediate_family_ids(db_handle, person)
+            scope_ids = _get_immediate_family_ids(db_handle, person, include_private)
         finally:
             if db_handle:
                 db_handle.close()
