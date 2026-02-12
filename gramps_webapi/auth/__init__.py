@@ -688,6 +688,27 @@ class PersonConnection(user_db.Model):  # type: ignore
     )
 
 
+class SharedDiscovery(user_db.Model):  # type: ignore
+    """Shared AI discovery from chat messages."""
+
+    __tablename__ = "shared_discoveries"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    user_id = mapped_column(
+        GUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tree = mapped_column(sa.String, nullable=False)
+    content = mapped_column(sa.Text, nullable=False)
+    person_ids = mapped_column(sa.Text, nullable=False, server_default="[]")
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.Index("idx_shared_discoveries_tree_created", "tree", "created_at"),
+    )
+
+
 class Nugget(user_db.Model):  # type: ignore
     """AI-generated interesting fact nugget for home page."""
 

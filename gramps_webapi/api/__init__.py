@@ -36,6 +36,7 @@ from .resources.bookmarks import (
 )
 from .resources.chat import ChatResource
 from .resources.conversations import ConversationsResource, ConversationResource
+from .resources.shared import SharedDiscoveriesResource
 from .resources.citations import CitationResource, CitationsResource
 from .resources.insights import InsightResource
 from .resources.connections import PersonConnectionsResource
@@ -423,6 +424,7 @@ register_endpt(
     "/conversations/<string:conversation_id>/",
     "conversation",
 )
+register_endpt(SharedDiscoveriesResource, "/shared/", "shared-discoveries")
 
 # Default Person
 register_endpt(DefaultPersonResource, "/default-person/", "default_person")
