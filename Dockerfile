@@ -28,8 +28,8 @@ COPY . /app/src
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
     /app/src[ai]
 
-# download and cache YFull tree for yclade
-RUN python3 -c "import yclade; yclade.tree.download_yfull_tree()"
+# download and cache YFull tree for yclade (non-fatal if server is down)
+RUN python3 -c "import yclade; yclade.tree.download_yfull_tree()" || true
 
 EXPOSE 5000
 

@@ -19,11 +19,12 @@
 
 """'This Day in Your Family' daily digest endpoint."""
 
+import re
 import uuid
 import json
 from datetime import datetime
 
-from flask import current_app
+from flask import current_app, request
 from flask_jwt_extended import get_jwt_identity
 
 from ..llm import generate_this_day
@@ -49,9 +50,15 @@ class ThisDayResource(ProtectedResource):
         user_id = get_jwt_identity()
         include_private = has_permissions({PERM_VIEW_PRIVATE})
 
-        # Get today's month and day
-        today = datetime.now()
-        month_day = f"{today.month:02d}-{today.day:02d}"
+        # Use client-provided date (local timezone) or fall back to server date
+        client_date = request.args.get("date", "")
+        if client_date and re.match(r"^\d{2}-\d{2}$", client_date):
+            month_day = client_date
+            month, day = int(client_date[:2]), int(client_date[3:])
+        else:
+            today = datetime.now()
+            month_day = f"{today.month:02d}-{today.day:02d}"
+            month, day = today.month, today.day
 
         logger = get_logger()
         logger.info("Fetching This Day digest for %s on tree %s", month_day, tree)
@@ -81,8 +88,8 @@ class ThisDayResource(ProtectedResource):
 
         try:
             content_text, metadata = generate_this_day(
-                month=today.month,
-                day=today.day,
+                month=month,
+                day=day,
                 tree=tree,
                 include_private=include_private,
                 user_id=user_id,
