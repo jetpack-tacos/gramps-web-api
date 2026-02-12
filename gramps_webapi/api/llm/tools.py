@@ -712,7 +712,7 @@ def get_data_quality_issues(
         "no_sources": {
             "label": "No Sources",
             "rule": "HasSourceCount",
-            "values": ["0"],
+            "values": ["0", "0"],
         },
     }
     valid_issue_types = ["all", *issue_map.keys()]
@@ -745,8 +745,18 @@ def get_data_quality_issues(
         if issue_type == "all":
             lines = ["Data quality issues summary:"]
             for key, issue in issue_map.items():
-                handles = _apply_issue_rule(issue["rule"], issue["values"])
-                lines.append(f"{key}: {len(handles)}")
+                try:
+                    handles = _apply_issue_rule(issue["rule"], issue["values"])
+                    count = len(handles)
+                except Exception as e:
+                    logger.warning(
+                        "Data quality rule failed for %s (%s): %s",
+                        key,
+                        issue["rule"],
+                        e,
+                    )
+                    count = 0
+                lines.append(f"{key}: {count}")
             return "\n".join(lines)
 
         selected_issue = issue_map[issue_type]
@@ -935,6 +945,10 @@ def add_event_to_person(
             db_handle.add_event(event, trans)
             event_ref.set_reference_handle(event.get_handle())
             person.add_event_ref(event_ref)
+            if normalized_type == "birth":
+                person.set_birth_ref(event_ref)
+            else:
+                person.set_death_ref(event_ref)
             db_handle.commit_person(person, trans)
 
         return (

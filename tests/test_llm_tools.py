@@ -953,28 +953,30 @@ class TestAddEventToPersonTool(unittest.TestCase):
     def _find_person_without_birth(self):
         from gramps_webapi.api.util import get_db_outside_request
 
-        db = get_db_outside_request(TEST_TREE, True, True, "test_user")
-        selected = None
-        for handle in db.get_person_handles():
-            person = db.get_person_from_handle(handle)
-            if not person.get_birth_ref():
-                selected = (person.gramps_id, person.handle)
-                break
-        db.close()
-        return selected
+        with TEST_APP.app_context():
+            db = get_db_outside_request(TEST_TREE, True, True, "test_user")
+            selected = None
+            for handle in db.get_person_handles():
+                person = db.get_person_from_handle(handle)
+                if not person.get_birth_ref():
+                    selected = (person.gramps_id, person.handle)
+                    break
+            db.close()
+            return selected
 
     def _find_person_with_birth(self):
         from gramps_webapi.api.util import get_db_outside_request
 
-        db = get_db_outside_request(TEST_TREE, True, True, "test_user")
-        selected = None
-        for handle in db.get_person_handles():
-            person = db.get_person_from_handle(handle)
-            if person.get_birth_ref():
-                selected = (person.gramps_id, person.handle)
-                break
-        db.close()
-        return selected
+        with TEST_APP.app_context():
+            db = get_db_outside_request(TEST_TREE, True, True, "test_user")
+            selected = None
+            for handle in db.get_person_handles():
+                person = db.get_person_from_handle(handle)
+                if person.get_birth_ref():
+                    selected = (person.gramps_id, person.handle)
+                    break
+            db.close()
+            return selected
 
     def test_create_birth_event_for_person_without_one_succeeds(self):
         """Creating a birth event should succeed and link it to the person."""
