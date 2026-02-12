@@ -38,6 +38,7 @@ from .resources.chat import ChatResource
 from .resources.conversations import ConversationsResource, ConversationResource
 from .resources.citations import CitationResource, CitationsResource
 from .resources.insights import InsightResource
+from .resources.connections import PersonConnectionsResource
 from .resources.nuggets import NuggetsListResource, NuggetResource
 from .resources.blog import BlogGenerateResource, BlogCheckResource
 from .resources.this_day import ThisDayResource
@@ -397,6 +398,11 @@ register_endpt(
     InsightResource,
     "/people/<string:gramps_id>/insights/",
     "person-insight",
+)
+register_endpt(
+    PersonConnectionsResource,
+    "/people/<string:gramps_id>/connections/",
+    "person-connections",
 )
 
 # Nuggets

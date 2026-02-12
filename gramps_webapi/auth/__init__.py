@@ -663,6 +663,31 @@ class PersonInsight(user_db.Model):  # type: ignore
     )
 
 
+class PersonConnection(user_db.Model):  # type: ignore
+    """AI-generated connections narrative for a person."""
+
+    __tablename__ = "person_connections"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    tree = mapped_column(sa.String, nullable=False)
+    person_handle = mapped_column(sa.String, nullable=False)
+    content = mapped_column(sa.Text, nullable=False)
+    generated_by = mapped_column(
+        GUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    model = mapped_column(sa.String, nullable=False)
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "tree", "person_handle", name="uq_person_connections_tree_handle"
+        ),
+        sa.Index("idx_person_connections_tree_handle", "tree", "person_handle"),
+    )
+
+
 class Nugget(user_db.Model):  # type: ignore
     """AI-generated interesting fact nugget for home page."""
 

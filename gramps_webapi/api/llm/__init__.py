@@ -42,6 +42,22 @@ RULES:
 - Each paragraph = one observation, written in plain prose with personality."""
 
 
+CONNECTIONS_SYSTEM_PROMPT = """You are writing a "connections" narrative for one person in a family tree.
+
+You will receive:
+- The viewed person's Gramps ID
+- A set of findings that already mention the viewed person or their immediate family
+
+Write 2-3 short paragraphs explaining the most interesting connections to other people, places, time periods, or recurring family patterns.
+
+RULES:
+- Base every claim only on the supplied findings.
+- Keep it lively and specific, not generic.
+- Always use person links in this exact format: [Name](/person/GRAMPS_ID)
+- Do not use bullet points, numbered lists, headers, or bold text.
+- Do not repeat the same finding in different words."""
+
+
 def sanitize_answer(answer: str) -> str:
     """Sanitize the LLM answer."""
     # some models convert relative URLs to absolute URLs with placeholder domains
@@ -251,6 +267,66 @@ def generate_insight(
     except Exception as e:
         logger.error("Unexpected error during insight generation: %s", e)
         abort_with_message(500, "Unexpected error generating insight.")
+
+
+def generate_person_connections(
+    person_gramps_id: str,
+    findings_text: str,
+    tree: str,
+    include_private: bool,
+    user_id: str,
+) -> tuple[str, dict[str, Any]]:
+    """Generate AI "person connections" narrative via single-shot Gemini."""
+    logger = get_logger()
+
+    config = current_app.config
+    model_name = config.get("LLM_MODEL")
+
+    if not model_name:
+        raise ValueError("No LLM model specified")
+
+    api_key = os.environ.get("GEMINI_API_KEY") or config.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("No Gemini API key configured")
+
+    context = (
+        f"VIEWED PERSON: {person_gramps_id}\n\n"
+        "SCOPED FINDINGS (already filtered to this person/immediate family):\n"
+        f"{findings_text}"
+    )
+
+    client = genai.Client(api_key=api_key)
+
+    try:
+        logger.debug(
+            "Generating person connections for %s (%d chars findings)",
+            person_gramps_id,
+            len(findings_text),
+        )
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=context)],
+                )
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=CONNECTIONS_SYSTEM_PROMPT,
+                temperature=0.7,
+            ),
+        )
+
+        response_text = extract_text_from_response(response)
+        metadata = extract_metadata_from_result(response)
+        response_text = sanitize_answer(response_text)
+        return response_text, metadata
+    except ValueError as e:
+        logger.error("Gemini configuration error during connections generation: %s", e)
+        abort_with_message(500, "Error communicating with the AI model")
+    except Exception as e:
+        logger.error("Unexpected error during connections generation: %s", e)
+        abort_with_message(500, "Unexpected error generating person connections.")
 
 
 NUGGET_SYSTEM_PROMPT = """You will receive data about a family tree. Turn it into exactly 30 short, punchy nuggets (1-2 sentences, under 40 words each).
