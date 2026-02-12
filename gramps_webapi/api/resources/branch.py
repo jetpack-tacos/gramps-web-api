@@ -7,7 +7,7 @@ from flask import jsonify
 from flask_jwt_extended import get_jwt_identity
 
 from ...auth import User, user_db
-from ..branch import compute_branch_ids
+from ..branch import compute_branch_ids, compute_cluster_for_user
 from ..util import abort_with_message, get_db_handle
 from . import ProtectedResource
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def _recompute_and_store_branch(user, db_handle):
-    """Recompute branch IDs and store on user record.
+    """Recompute branch IDs, store on user record, and update cluster.
 
     Args:
         user: SQLAlchemy User object (must be in session).
@@ -26,12 +26,20 @@ def _recompute_and_store_branch(user, db_handle):
     """
     if not user.home_person:
         user.branch_ids = None
+        user.cluster_id = None
         user_db.session.commit()
         return set()
 
     branch_ids = compute_branch_ids(db_handle, user.home_person)
     user.branch_ids = json.dumps(sorted(branch_ids))
     user_db.session.commit()
+
+    # Recompute cluster after branch changes
+    try:
+        compute_cluster_for_user(str(user.id), user.tree)
+    except Exception as e:
+        logger.warning("Cluster computation failed for user %s: %s", user.id, e)
+
     return branch_ids
 
 
@@ -72,6 +80,7 @@ def _get_branch_summary(user, db_handle, branch_ids=None):
         "count": len(branch_ids),
         "sample_names": sample_names,
         "generations_up": 5,
+        "cluster_id": user.cluster_id,
     }
 
 

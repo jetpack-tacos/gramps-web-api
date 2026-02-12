@@ -521,6 +521,7 @@ class User(user_db.Model):  # type: ignore
     tree = mapped_column(sa.String, index=True)
     home_person = mapped_column(sa.String, nullable=True)
     branch_ids = mapped_column(sa.Text, nullable=True)  # JSON array of Gramps IDs
+    cluster_id = mapped_column(sa.String, nullable=True)  # Shared cluster for similar branches
 
     def __repr__(self):
         """Return string representation of instance."""
@@ -682,10 +683,12 @@ class Nugget(user_db.Model):  # type: ignore
     )
     display_count = mapped_column(sa.Integer, nullable=False, server_default=sa.text("0"))
     click_count = mapped_column(sa.Integer, nullable=False, server_default=sa.text("0"))
+    cluster_id = mapped_column(sa.String, nullable=True)  # Cluster that generated this nugget
 
     __table_args__ = (
         sa.Index("idx_nuggets_tree_created", "tree", "created_at"),
         sa.Index("idx_nuggets_tree_display_count", "tree", "display_count"),
+        sa.Index("idx_nuggets_cluster_id", "cluster_id"),
     )
 
 

@@ -58,10 +58,19 @@ class NuggetsListResource(ProtectedResource):
         if limit > 20:
             limit = 20
 
-        # Get nuggets for this tree, weighted by least shown
+        # Load user's cluster_id for scoped nugget retrieval
+        user = user_db.session.query(User).filter_by(id=user_id).scalar()
+        cluster_id = user.cluster_id if user else None
+
+        # Get nuggets scoped by cluster (or unscoped for legacy/no-cluster)
+        query = Nugget.query.filter_by(tree=tree)
+        if cluster_id:
+            query = query.filter_by(cluster_id=cluster_id)
+        else:
+            query = query.filter(Nugget.cluster_id.is_(None))
+
         nuggets = (
-            Nugget.query
-            .filter_by(tree=tree)
+            query
             .order_by(Nugget.display_count.asc(), Nugget.created_at.desc())
             .limit(limit * 2)  # Get more than needed for randomness
             .all()
@@ -119,14 +128,36 @@ class NuggetsListResource(ProtectedResource):
                 user_id=user_id,
             )
 
-            # Load user's branch_ids for personalized content
+            # Load user's branch_ids and cluster_id for personalized content
             user = user_db.session.query(User).filter_by(id=user_id).scalar()
             person_subset = None
-            if user and user.branch_ids:
-                try:
-                    person_subset = set(_json.loads(user.branch_ids))
-                except (ValueError, TypeError):
-                    pass
+            cluster_id = None
+            if user:
+                cluster_id = user.cluster_id
+                if user.branch_ids:
+                    try:
+                        person_subset = set(_json.loads(user.branch_ids))
+                    except (ValueError, TypeError):
+                        pass
+
+            # Check if cluster already has enough nuggets (skip redundant generation)
+            if cluster_id:
+                existing_count = (
+                    Nugget.query
+                    .filter_by(tree=tree, cluster_id=cluster_id)
+                    .count()
+                )
+                if existing_count >= 30:
+                    logger.info(
+                        "Cluster %s already has %d nuggets, skipping generation",
+                        cluster_id, existing_count,
+                    )
+                    return {
+                        "data": [],
+                        "count": 0,
+                        "cluster_cached": True,
+                        "cluster_nugget_count": existing_count,
+                    }, 200
 
             # Single-shot Gemini call with pre-gathered context (no agent loop)
             answer_text, metadata = generate_nuggets(
@@ -198,7 +229,7 @@ class NuggetsListResource(ProtectedResource):
                     elif gramps_id.startswith('F'):
                         nugget_type = 'family'
 
-                # Create the nugget
+                # Create the nugget (tagged with cluster_id if available)
                 nugget_id = str(uuid.uuid4())
                 new_nugget = Nugget(
                     id=nugget_id,
@@ -209,6 +240,7 @@ class NuggetsListResource(ProtectedResource):
                     target_gramps_id=gramps_id,
                     generated_by=user_id,
                     model=model_name,
+                    cluster_id=cluster_id,
                 )
                 user_db.session.add(new_nugget)
                 nuggets_created.append({
