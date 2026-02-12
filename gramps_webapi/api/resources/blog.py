@@ -35,7 +35,10 @@ from ..util import (
     get_tree_from_jwt_or_fail,
     update_usage_ai,
 )
+import json as _json
+
 from . import ProtectedResource
+from ...auth import User, user_db
 from ...auth.const import PERM_USE_CHAT, PERM_VIEW_PRIVATE, PERM_ADD_OBJ
 from ..auth import has_permissions, require_permissions
 
@@ -126,6 +129,15 @@ class BlogGenerateResource(ProtectedResource):
             previous_titles, featured_ids = _get_existing_blog_info(db_handle)
             logger.info("Found %d existing blog posts featuring %d people", len(previous_titles), len(featured_ids))
 
+            # Load user's branch_ids for personalized content
+            user = user_db.session.query(User).filter_by(id=user_id).scalar()
+            person_subset = None
+            if user and user.branch_ids:
+                try:
+                    person_subset = set(_json.loads(user.branch_ids))
+                except (ValueError, TypeError):
+                    pass
+
             # Single-shot Gemini call with pre-gathered context
             title, content, metadata = generate_blog_post(
                 tree=tree,
@@ -133,6 +145,7 @@ class BlogGenerateResource(ProtectedResource):
                 user_id=user_id,
                 previous_titles=previous_titles,
                 previously_featured_ids=featured_ids,
+                person_subset=person_subset,
             )
 
             if not content:

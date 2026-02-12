@@ -35,8 +35,10 @@ from ..util import (
     get_tree_from_jwt_or_fail,
     update_usage_ai,
 )
+import json as _json
+
 from . import ProtectedResource
-from ...auth import Nugget, user_db
+from ...auth import Nugget, User, user_db
 from ...auth.const import PERM_USE_CHAT, PERM_VIEW_PRIVATE
 from ..auth import has_permissions, require_permissions
 
@@ -117,11 +119,21 @@ class NuggetsListResource(ProtectedResource):
                 user_id=user_id,
             )
 
+            # Load user's branch_ids for personalized content
+            user = user_db.session.query(User).filter_by(id=user_id).scalar()
+            person_subset = None
+            if user and user.branch_ids:
+                try:
+                    person_subset = set(_json.loads(user.branch_ids))
+                except (ValueError, TypeError):
+                    pass
+
             # Single-shot Gemini call with pre-gathered context (no agent loop)
             answer_text, metadata = generate_nuggets(
                 tree=tree,
                 include_private=include_private,
                 user_id=user_id,
+                person_subset=person_subset,
             )
 
             if not answer_text:

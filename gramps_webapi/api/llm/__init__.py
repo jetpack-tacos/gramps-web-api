@@ -285,6 +285,7 @@ def generate_nuggets(
     tree: str,
     include_private: bool,
     user_id: str,
+    person_subset: set[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Generate interesting nuggets using single-shot Gemini call (no tools).
 
@@ -296,6 +297,7 @@ def generate_nuggets(
         tree: The tree identifier
         include_private: Whether to include private information
         user_id: The user identifier
+        person_subset: If provided, only include findings about these Gramps IDs
 
     Returns:
         Tuple of (nuggets_text, metadata_dict)
@@ -325,7 +327,7 @@ def generate_nuggets(
     stats_text = get_tree_statistics(ctx)
     logger.info("Tree statistics gathered (%d chars)", len(stats_text))
 
-    clusters_text = find_coincidences_and_clusters(ctx, category="all", max_results=15)
+    clusters_text = find_coincidences_and_clusters(ctx, category="all", max_results=15, person_subset=person_subset)
     logger.info("Coincidences/clusters gathered (%d chars)", len(clusters_text))
 
     context = f"TREE STATISTICS:\n{stats_text}\n\nINTERESTING PATTERNS AND COINCIDENCES:\n{clusters_text}"
@@ -404,6 +406,7 @@ def generate_blog_post(
     user_id: str,
     previous_titles: list[str] | None = None,
     previously_featured_ids: set[str] | None = None,
+    person_subset: set[str] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     """Generate a blog post using data-driven topic selection and single-shot Gemini call.
 
@@ -417,6 +420,7 @@ def generate_blog_post(
         user_id: The user identifier
         previous_titles: Titles of existing blog posts (for diversity)
         previously_featured_ids: Gramps IDs already featured in existing posts
+        person_subset: If provided, only include findings about these Gramps IDs
 
     Returns:
         Tuple of (title, content, metadata_dict)
@@ -448,13 +452,13 @@ def generate_blog_post(
     logger.info("Gathering context for blog post generation...")
 
     # Step 1: Gather all findings from analytical tools
-    clusters_text = find_coincidences_and_clusters(ctx, category="all", max_results=10)
+    clusters_text = find_coincidences_and_clusters(ctx, category="all", max_results=10, person_subset=person_subset)
     logger.info("Coincidences/clusters gathered (%d chars)", len(clusters_text))
 
     stats_text = get_tree_statistics(ctx)
     logger.info("Tree statistics gathered (%d chars)", len(stats_text))
 
-    migration_text = analyze_migration_patterns(ctx)
+    migration_text = analyze_migration_patterns(ctx, person_subset=person_subset)
     logger.info("Migration patterns gathered (%d chars)", len(migration_text))
 
     # Step 2: Split findings into individual items and select a random subset

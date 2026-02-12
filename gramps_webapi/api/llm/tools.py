@@ -1355,6 +1355,7 @@ def find_coincidences_and_clusters(
     ctx: RunContext[AgentDeps],
     category: str = "all",
     max_results: int = 10,
+    person_subset: set[str] | None = None,
 ) -> str:
     """Find narratively interesting patterns and coincidences in the family tree.
 
@@ -1400,6 +1401,8 @@ def find_coincidences_and_clusters(
             for person_handle in db_handle.iter_person_handles():
                 person = db_handle.get_person_from_handle(person_handle)
                 if not ctx.deps.include_private and person.private:
+                    continue
+                if person_subset is not None and person.gramps_id not in person_subset:
                     continue
 
                 birth_ref = person.get_birth_ref()
@@ -1462,6 +1465,8 @@ def find_coincidences_and_clusters(
                         for class_name, ref_handle in db_handle.find_backlink_handles(event_handle, ['Person']):
                             person = db_handle.get_person_from_handle(ref_handle)
                             if person:
+                                if person_subset is not None and person.gramps_id not in person_subset:
+                                    continue
                                 event_year_data[key].append((person.gramps_id, person.get_primary_name().get_name()))
                                 break
 
@@ -1490,6 +1495,17 @@ def find_coincidences_and_clusters(
                 children_refs = family.get_child_ref_list()
                 if len(children_refs) < 2:
                     continue
+
+                # Skip families with no members in the branch subset
+                if person_subset is not None:
+                    family_in_subset = False
+                    for cr in children_refs:
+                        c = db_handle.get_person_from_handle(cr.ref)
+                        if c and c.gramps_id in person_subset:
+                            family_in_subset = True
+                            break
+                    if not family_in_subset:
+                        continue
 
                 # Get all children's names and death dates
                 children_data = []
@@ -1549,6 +1565,19 @@ def find_coincidences_and_clusters(
                 if not ctx.deps.include_private and family.private:
                     continue
 
+                if person_subset is not None:
+                    father_h = family.get_father_handle()
+                    mother_h = family.get_mother_handle()
+                    in_subset = False
+                    for h in [father_h, mother_h]:
+                        if h:
+                            p = db_handle.get_person_from_handle(h)
+                            if p and p.gramps_id in person_subset:
+                                in_subset = True
+                                break
+                    if not in_subset:
+                        continue
+
                 child_count = len(family.get_child_ref_list())
                 if child_count >= 10:
                     father_handle = family.get_father_handle()
@@ -1575,6 +1604,8 @@ def find_coincidences_and_clusters(
             for person_handle in db_handle.iter_person_handles():
                 person = db_handle.get_person_from_handle(person_handle)
                 if not ctx.deps.include_private and person.private:
+                    continue
+                if person_subset is not None and person.gramps_id not in person_subset:
                     continue
 
                 birth_ref = person.get_birth_ref()
@@ -1625,6 +1656,7 @@ def analyze_migration_patterns(
     surname: str = "",
     start_year: int = 0,
     end_year: int = 9999,
+    person_subset: set[str] | None = None,
 ) -> str:
     """Extract all location changes across people and generations.
 
@@ -1656,6 +1688,8 @@ def analyze_migration_patterns(
         for person_handle in db_handle.iter_person_handles():
             person = db_handle.get_person_from_handle(person_handle)
             if not ctx.deps.include_private and person.private:
+                continue
+            if person_subset is not None and person.gramps_id not in person_subset:
                 continue
 
             person_surname = person.get_primary_name().get_surname()
