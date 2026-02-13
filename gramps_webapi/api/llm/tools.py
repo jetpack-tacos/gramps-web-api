@@ -712,7 +712,7 @@ def get_data_quality_issues(
         "no_sources": {
             "label": "No Sources",
             "rule": "HasSourceCount",
-            "values": ["0"],
+            "values": ["0", "equal to"],
         },
     }
     valid_issue_types = ["all", *issue_map.keys()]
