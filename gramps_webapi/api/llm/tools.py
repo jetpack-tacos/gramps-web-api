@@ -696,7 +696,7 @@ def get_data_quality_issues(
         },
         "incomplete_names": {
             "label": "Incomplete Names",
-            "rule": "IncompleteNames",
+            "rule": "MissingPrimaryNameParts",
             "values": [],
         },
         "incomplete_events": {

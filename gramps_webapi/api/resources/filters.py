@@ -55,7 +55,39 @@ class HasAssociationType(Rule):
         return False
 
 
-additional_person_rules = [HasAssociationType]
+class MissingPrimaryNameParts(Rule):
+    """Rule that checks for missing primary given name or surname."""
+
+    labels: list[str] = []
+    name = "People with incomplete primary names"
+    description = "Matches people whose primary name lacks a given name or surname"
+    category = "General filters"
+
+    @staticmethod
+    def _is_blank(value: Any) -> bool:
+        """Return True for empty or whitespace-only values."""
+        return not str(value or "").strip()
+
+    def apply_to_one(self, db: DbReadBase, person: Person) -> bool:  # type: ignore
+        """Apply the rule to the person."""
+        primary_name = person.get_primary_name()
+        if primary_name is None:
+            return True
+
+        if self._is_blank(primary_name.get_first_name()):
+            return True
+
+        surname_list = primary_name.get_surname_list() or []
+        if not surname_list:
+            return True
+
+        for surname in surname_list:
+            if not self._is_blank(surname.get_surname()):
+                return False
+        return True
+
+
+additional_person_rules = [HasAssociationType, MissingPrimaryNameParts]
 
 
 def get_rule_list(namespace: str) -> List[Rule]:

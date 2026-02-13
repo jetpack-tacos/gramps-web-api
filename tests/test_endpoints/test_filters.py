@@ -159,6 +159,12 @@ class TestFiltersPeople(unittest.TestCase):
         """Test creation, application, update, and deletion of filter."""
         check_filter_create_update_delete(self, BASE_URL, TEST_URL, "people")
 
+    def test_people_rule_missing_primary_name_parts_exists(self):
+        """Test MissingPrimaryNameParts is available for people filters."""
+        rv = check_success(self, TEST_URL + "people?rules=MissingPrimaryNameParts")
+        self.assertEqual(len(rv["rules"]), 1)
+        self.assertEqual(rv["rules"][0]["rule"], "MissingPrimaryNameParts")
+
 
 class TestFiltersFamilies(unittest.TestCase):
     """Specific test cases for the /api/filters/families endpoint."""
@@ -297,6 +303,78 @@ class TestHasAssociationType(unittest.TestCase):
         # no result
         rv = self.client.get(url, headers=headers)
         assert rv.json == []
+
+
+class TestMissingPrimaryNameParts(unittest.TestCase):
+    """Test cases for the MissingPrimaryNameParts filter."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Test class setup."""
+        cls.client = get_test_client()
+
+    def test_missing_primary_name_parts(self):
+        """Test that missing given/surname is flagged while prefix+surname is valid."""
+        headers = fetch_header(self.client)
+        rule_url = (
+            '/api/people/?rules={"rules":[{"name":"MissingPrimaryNameParts","values":[]}]}'
+        )
+
+        complete_handle = make_handle()
+        missing_given_handle = make_handle()
+        missing_surname_handle = make_handle()
+
+        complete_payload = {
+            "_class": "Person",
+            "handle": complete_handle,
+            "primary_name": {
+                "_class": "Name",
+                "first_name": "Anna",
+                "surname_list": [
+                    {"_class": "Surname", "prefix": "van", "surname": "Kiev"}
+                ],
+            },
+        }
+        missing_given_payload = {
+            "_class": "Person",
+            "handle": missing_given_handle,
+            "primary_name": {
+                "_class": "Name",
+                "surname_list": [{"_class": "Surname", "surname": "Kiev"}],
+            },
+        }
+        missing_surname_payload = {
+            "_class": "Person",
+            "handle": missing_surname_handle,
+            "primary_name": {
+                "_class": "Name",
+                "first_name": "Anna",
+            },
+        }
+
+        try:
+            rv = self.client.post("/api/people/", json=complete_payload, headers=headers)
+            assert rv.status_code == 201
+            rv = self.client.post(
+                "/api/people/", json=missing_given_payload, headers=headers
+            )
+            assert rv.status_code == 201
+            rv = self.client.post(
+                "/api/people/", json=missing_surname_payload, headers=headers
+            )
+            assert rv.status_code == 201
+
+            rv = self.client.get(rule_url, headers=headers)
+            assert rv.status_code == 200
+            handles = {person["handle"] for person in rv.json}
+
+            assert missing_given_handle in handles
+            assert missing_surname_handle in handles
+            assert complete_handle not in handles
+        finally:
+            self.client.delete(f"/api/people/{complete_handle}", headers=headers)
+            self.client.delete(f"/api/people/{missing_given_handle}", headers=headers)
+            self.client.delete(f"/api/people/{missing_surname_handle}", headers=headers)
         # add person
         rv = self.client.post("/api/people/", json=payload, headers=headers)
         assert rv.status_code == 201
