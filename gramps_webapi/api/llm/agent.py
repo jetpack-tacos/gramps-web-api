@@ -26,7 +26,7 @@ from typing import Any
 
 from google import genai
 from google.genai import types
-from google.genai.types import GoogleSearch, Tool
+from google.genai.types import GoogleSearch
 
 from .deps import AgentDeps
 from .tools import (
@@ -710,6 +710,7 @@ def run_agent(
     model_name: str,
     system_prompt_override: str | None = None,
     history: list[types.Content] | None = None,
+    grounding_enabled: bool = True,
 ) -> types.GenerateContentResponse:
     """Run the Gemini agent with tool calling loop.
 
@@ -722,6 +723,7 @@ def run_agent(
         model_name: The Gemini model name (e.g., "gemini-3-flash")
         system_prompt_override: Optional override for the system prompt
         history: Optional conversation history as Gemini Content objects
+        grounding_enabled: Whether to attach Google Search grounding
 
     Returns:
         The final GenerateContentResponse from Gemini
@@ -741,14 +743,17 @@ def run_agent(
 
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
+    if grounding_enabled:
+        tool_config = types.Tool(
+            function_declarations=tool_declarations,
+            google_search=GoogleSearch(),
+        )
+    else:
+        tool_config = types.Tool(function_declarations=tool_declarations)
+
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
-        tools=[
-            types.Tool(
-                function_declarations=tool_declarations,
-                google_search=GoogleSearch(),
-            ),
-        ],
+        tools=[tool_config],
         temperature=0.2,
     )
 

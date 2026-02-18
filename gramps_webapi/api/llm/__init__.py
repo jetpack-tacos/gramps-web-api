@@ -203,6 +203,7 @@ def answer_with_agent(
     include_private: bool,
     user_id: str,
     history: list | None = None,
+    grounding_enabled: bool = True,
 ):
     """Answer a prompt using the Gemini agent.
 
@@ -212,6 +213,7 @@ def answer_with_agent(
         include_private: Whether to include private information
         user_id: The user identifier
         history: Optional chat history
+        grounding_enabled: Whether to attach Google Search grounding
 
     Returns:
         GenerateContentResponse from Gemini
@@ -245,6 +247,7 @@ def answer_with_agent(
             model_name=model_name,
             system_prompt_override=system_prompt_override,
             history=gemini_history,
+            grounding_enabled=grounding_enabled,
         )
         response_text = extract_text_from_response(response)
         logger.info("Gemini response (%d chars): %s", len(response_text), response_text[:500])

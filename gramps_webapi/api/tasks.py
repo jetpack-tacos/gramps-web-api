@@ -664,6 +664,7 @@ def process_chat(
         extract_text_from_response,
         sanitize_answer,
     )
+    from gramps_webapi.api.llm.grounding_policy import decide_chat_grounding
     from gramps_webapi.api.llm.grounding_usage import record_monthly_grounding_usage
     from gramps_webapi.api.resources.conversations import (
         add_message,
@@ -690,6 +691,13 @@ def process_chat(
     if conversation_id:
         add_message(conversation_id, role="user", content=query)
 
+    grounding_decision = decide_chat_grounding(
+        current_app.config.get("SEARCH_GROUNDING_MODE", "auto")
+    )
+    mode = grounding_decision["mode"]
+    decision_reason = grounding_decision["decision_reason"]
+    grounding_attached = bool(grounding_decision["grounding_attached"])
+
     try:
         response = answer_with_agent(
             prompt=query,
@@ -697,6 +705,7 @@ def process_chat(
             include_private=include_private,
             user_id=user_id,
             history=history,
+            grounding_enabled=grounding_attached,
         )
     except Exception as e:
         logger = get_logger()
@@ -720,9 +729,6 @@ def process_chat(
         )
 
     logger = get_logger()
-    mode = str(current_app.config.get("SEARCH_GROUNDING_MODE", "auto"))
-    decision_reason = "stage0_default"
-    grounding_attached = True  # Stage 0: current chat path attaches Google Search.
     grounding_stats = extract_grounding_stats_from_result(response)
     web_search_query_count = int(grounding_stats["web_search_query_count"])
 

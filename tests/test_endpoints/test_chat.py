@@ -187,3 +187,59 @@ class TestChat(unittest.TestCase):
         assert "usage" in metadata
         assert isinstance(metadata["usage"]["input_tokens"], int)
         assert isinstance(metadata["usage"]["total_tokens"], int)
+
+    @patch("gramps_webapi.api.llm.run_agent")
+    def test_chat_grounding_mode_off(self, mock_run_agent):
+        """off mode should call run_agent with grounding disabled."""
+        mock_run_agent.return_value = _make_mock_gemini_response()
+        app = self.client.application
+        old_mode = app.config.get("SEARCH_GROUNDING_MODE")
+        app.config["SEARCH_GROUNDING_MODE"] = "off"
+
+        try:
+            header = fetch_header(self.client, empty_db=True)
+            rv = self.client.get("/api/trees/", headers=header)
+            assert rv.status_code == 200
+            tree_id = rv.json[0]["id"]
+            rv = self.client.put(
+                f"/api/trees/{tree_id}", json={"min_role_ai": ROLE_OWNER}, headers=header
+            )
+            assert rv.status_code == 200
+
+            header = fetch_header(self.client, empty_db=True)
+            query = "Tell me something interesting in this tree."
+            rv = self.client.post("/api/chat/", json={"query": query}, headers=header)
+            assert rv.status_code == 200
+
+            kwargs = mock_run_agent.call_args.kwargs
+            assert kwargs["grounding_enabled"] is False
+        finally:
+            app.config["SEARCH_GROUNDING_MODE"] = old_mode
+
+    @patch("gramps_webapi.api.llm.run_agent")
+    def test_chat_grounding_mode_on(self, mock_run_agent):
+        """on mode should call run_agent with grounding enabled."""
+        mock_run_agent.return_value = _make_mock_gemini_response()
+        app = self.client.application
+        old_mode = app.config.get("SEARCH_GROUNDING_MODE")
+        app.config["SEARCH_GROUNDING_MODE"] = "on"
+
+        try:
+            header = fetch_header(self.client, empty_db=True)
+            rv = self.client.get("/api/trees/", headers=header)
+            assert rv.status_code == 200
+            tree_id = rv.json[0]["id"]
+            rv = self.client.put(
+                f"/api/trees/{tree_id}", json={"min_role_ai": ROLE_OWNER}, headers=header
+            )
+            assert rv.status_code == 200
+
+            header = fetch_header(self.client, empty_db=True)
+            query = "Tell me something interesting in this tree."
+            rv = self.client.post("/api/chat/", json={"query": query}, headers=header)
+            assert rv.status_code == 200
+
+            kwargs = mock_run_agent.call_args.kwargs
+            assert kwargs["grounding_enabled"] is True
+        finally:
+            app.config["SEARCH_GROUNDING_MODE"] = old_mode
