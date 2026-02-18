@@ -375,19 +375,3 @@ class TestMissingPrimaryNameParts(unittest.TestCase):
             self.client.delete(f"/api/people/{complete_handle}", headers=headers)
             self.client.delete(f"/api/people/{missing_given_handle}", headers=headers)
             self.client.delete(f"/api/people/{missing_surname_handle}", headers=headers)
-        # add person
-        rv = self.client.post("/api/people/", json=payload, headers=headers)
-        assert rv.status_code == 201
-        # one result
-        rv = self.client.get(url, headers=headers)
-        assert rv.json
-        assert rv.json[0]["handle"] == handle
-        # no result for wrong type
-        rv = self.client.get(url.replace("DNA", "NotDNA"), headers=headers)
-        assert rv.json == []
-        # delete person
-        rv = self.client.delete(f"/api/people/{handle}", headers=headers)
-        assert rv.status_code == 200
-        # no result
-        rv = self.client.get(url, headers=headers)
-        assert rv.json == []
