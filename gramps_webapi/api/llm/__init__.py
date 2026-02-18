@@ -78,6 +78,59 @@ def sanitize_answer(answer: str) -> str:
     return answer
 
 
+def _is_mock_object(value: Any) -> bool:
+    """Return True if this value looks like a unittest.mock object."""
+    return value.__class__.__module__.startswith("unittest.mock")
+
+
+def _extract_web_search_queries(
+    response: types.GenerateContentResponse,
+) -> list[str]:
+    """Extract Google Search queries from Gemini grounding metadata."""
+    if not response.candidates:
+        return []
+
+    candidate = response.candidates[0]
+    grounding_metadata = getattr(candidate, "grounding_metadata", None)
+    if grounding_metadata is None or _is_mock_object(grounding_metadata):
+        return []
+
+    raw_queries = getattr(grounding_metadata, "web_search_queries", None)
+    if raw_queries is None or _is_mock_object(raw_queries):
+        return []
+
+    if isinstance(raw_queries, list):
+        query_entries = raw_queries
+    else:
+        try:
+            query_entries = list(raw_queries)
+        except TypeError:
+            return []
+
+    queries: list[str] = []
+    for entry in query_entries:
+        if isinstance(entry, str):
+            query = entry
+        elif isinstance(entry, dict):
+            query = entry.get("text") or entry.get("query") or ""
+        else:
+            query = getattr(entry, "text", None) or getattr(entry, "query", None) or ""
+        if query:
+            queries.append(str(query))
+    return queries
+
+
+def extract_grounding_stats_from_result(
+    response: types.GenerateContentResponse,
+) -> dict[str, Any]:
+    """Extract web-grounding statistics from a Gemini response."""
+    queries = _extract_web_search_queries(response)
+    return {
+        "web_search_query_count": len(queries),
+        "web_search_queries": queries,
+    }
+
+
 def extract_metadata_from_result(response: types.GenerateContentResponse) -> dict[str, Any]:
     """Extract metadata from Gemini GenerateContentResponse.
 
@@ -95,6 +148,13 @@ def extract_metadata_from_result(response: types.GenerateContentResponse) -> dic
             "output_tokens": response.usage_metadata.candidates_token_count,
             "total_tokens": response.usage_metadata.total_token_count,
         }
+
+    grounding = extract_grounding_stats_from_result(response)
+    metadata["grounding"] = {
+        "web_search_query_count": grounding["web_search_query_count"],
+    }
+    if grounding["web_search_queries"]:
+        metadata["grounding"]["web_search_queries"] = grounding["web_search_queries"]
 
     return metadata
 

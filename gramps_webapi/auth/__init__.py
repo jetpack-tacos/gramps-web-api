@@ -754,3 +754,34 @@ class ThisDayCache(user_db.Model):  # type: ignore
     __table_args__ = (
         sa.Index("idx_this_day_tree_month_day", "tree", "month_day"),
     )
+
+
+class SearchGroundingUsageMonthly(user_db.Model):  # type: ignore
+    """Monthly usage counters for web grounding."""
+
+    __tablename__ = "search_grounding_usage_monthly"
+
+    id = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    period_start = mapped_column(sa.Date, nullable=False, unique=True)
+    grounded_prompts_count = mapped_column(
+        sa.Integer, nullable=False, server_default=sa.text("0")
+    )
+    web_search_queries_count = mapped_column(
+        sa.Integer, nullable=False, server_default=sa.text("0")
+    )
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+    updated_at = mapped_column(
+        sa.DateTime,
+        nullable=False,
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "idx_search_grounding_usage_monthly_period_start",
+            "period_start",
+        ),
+    )

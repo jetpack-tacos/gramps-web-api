@@ -65,6 +65,7 @@ from .util import (
     close_db,
     get_config,
     get_db_outside_request,
+    get_logger,
     gramps_object_from_dict,
     send_email,
     update_usage_people,
@@ -658,10 +659,12 @@ def process_chat(
     # import here to avoid error if AI dependencies are not installed
     from gramps_webapi.api.llm import (
         answer_with_agent,
+        extract_grounding_stats_from_result,
         extract_metadata_from_result,
         extract_text_from_response,
         sanitize_answer,
     )
+    from gramps_webapi.api.llm.grounding_usage import record_monthly_grounding_usage
     from gramps_webapi.api.resources.conversations import (
         add_message,
         auto_title,
@@ -696,8 +699,6 @@ def process_chat(
             history=history,
         )
     except Exception as e:
-        # Log the error
-        from .util import get_logger
         logger = get_logger()
         logger.error(f"Error in answer_with_agent: {str(e)}", exc_info=True)
         # Re-raise with more context
@@ -710,7 +711,6 @@ def process_chat(
 
     # If no response text was generated, provide a helpful error
     if not response_text or not response_text.strip():
-        from .util import get_logger
         logger = get_logger()
         logger.error("Agent completed but generated no response text. This usually means the agent hit the iteration limit while calling tools.")
         raise RuntimeError(
@@ -719,10 +719,41 @@ def process_chat(
             "Please try asking a more specific question."
         )
 
+    logger = get_logger()
+    mode = str(current_app.config.get("SEARCH_GROUNDING_MODE", "auto"))
+    decision_reason = "stage0_default"
+    grounding_attached = True  # Stage 0: current chat path attaches Google Search.
+    grounding_stats = extract_grounding_stats_from_result(response)
+    web_search_query_count = int(grounding_stats["web_search_query_count"])
+
+    try:
+        usage_snapshot = record_monthly_grounding_usage(
+            grounding_attached=grounding_attached,
+            web_search_query_count=web_search_query_count,
+        )
+    except Exception:
+        logger.warning("Failed to record monthly grounding usage", exc_info=True)
+        usage_snapshot = None
+
+    log_payload = {
+        "mode": mode,
+        "decision_reason": decision_reason,
+        "grounding_attached": grounding_attached,
+        "web_search_queries": web_search_query_count,
+    }
+    if usage_snapshot:
+        log_payload["usage_month"] = usage_snapshot["period_start"]
+        log_payload["grounded_prompts_month"] = usage_snapshot["grounded_prompts_count"]
+        log_payload["web_search_queries_month"] = usage_snapshot["web_search_queries_count"]
+    logger.info("chat_grounding_usage %s", json.dumps(log_payload, sort_keys=True))
+
     # Save the assistant message
     metadata = None
     if verbose:
         metadata = extract_metadata_from_result(response)
+        metadata["grounding"]["mode"] = mode
+        metadata["grounding"]["decision_reason"] = decision_reason
+        metadata["grounding"]["attached"] = grounding_attached
 
     if conversation_id:
         add_message(
