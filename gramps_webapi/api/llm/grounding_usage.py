@@ -77,3 +77,26 @@ def record_monthly_grounding_usage(
         "grounded_prompts_delta": grounded_delta,
         "web_search_queries_delta": query_delta,
     }
+
+
+def get_current_month_grounding_usage(
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return current UTC month usage counters."""
+    period_start = get_utc_month_start(now=now)
+    usage = (
+        user_db.session.query(SearchGroundingUsageMonthly)
+        .filter_by(period_start=period_start)
+        .first()
+    )
+    if usage is None:
+        grounded_prompts_count = 0
+        web_search_queries_count = 0
+    else:
+        grounded_prompts_count = int(usage.grounded_prompts_count or 0)
+        web_search_queries_count = int(usage.web_search_queries_count or 0)
+    return {
+        "period_start": period_start.isoformat(),
+        "grounded_prompts_count": grounded_prompts_count,
+        "web_search_queries_count": web_search_queries_count,
+    }

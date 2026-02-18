@@ -665,7 +665,10 @@ def process_chat(
         sanitize_answer,
     )
     from gramps_webapi.api.llm.grounding_policy import decide_chat_grounding
-    from gramps_webapi.api.llm.grounding_usage import record_monthly_grounding_usage
+    from gramps_webapi.api.llm.grounding_usage import (
+        get_current_month_grounding_usage,
+        record_monthly_grounding_usage,
+    )
     from gramps_webapi.api.resources.conversations import (
         add_message,
         auto_title,
@@ -691,32 +694,53 @@ def process_chat(
     if conversation_id:
         add_message(conversation_id, role="user", content=query)
 
+    try:
+        usage_before = get_current_month_grounding_usage()
+    except Exception:
+        logger = get_logger()
+        logger.warning("Failed to fetch monthly grounding usage", exc_info=True)
+        usage_before = {
+            "period_start": None,
+            "grounded_prompts_count": 0,
+            "web_search_queries_count": 0,
+        }
+
     grounding_decision = decide_chat_grounding(
-        current_app.config.get("SEARCH_GROUNDING_MODE", "auto")
+        raw_mode=current_app.config.get("SEARCH_GROUNDING_MODE", "auto"),
+        query=query,
+        current_grounded_prompts_count=usage_before["grounded_prompts_count"],
+        free_tier_limit=current_app.config.get("SEARCH_GROUNDING_FREE_TIER_LIMIT", 5000),
     )
     mode = grounding_decision["mode"]
     decision_reason = grounding_decision["decision_reason"]
     grounding_attached = bool(grounding_decision["grounding_attached"])
+    should_refuse = bool(grounding_decision.get("should_refuse", False))
+    refusal_message = grounding_decision.get("refusal_message")
 
-    try:
-        response = answer_with_agent(
-            prompt=query,
-            tree=tree,
-            include_private=include_private,
-            user_id=user_id,
-            history=history,
-            grounding_enabled=grounding_attached,
+    metadata = None
+    if should_refuse:
+        response_text = refusal_message or (
+            "I can only help with genealogy and family-history questions."
         )
-    except Exception as e:
-        logger = get_logger()
-        logger.error(f"Error in answer_with_agent: {str(e)}", exc_info=True)
-        # Re-raise with more context
-        raise RuntimeError(f"AI agent error: {str(e)}") from e
+    else:
+        try:
+            response = answer_with_agent(
+                prompt=query,
+                tree=tree,
+                include_private=include_private,
+                user_id=user_id,
+                history=history,
+                grounding_enabled=grounding_attached,
+            )
+        except Exception as e:
+            logger = get_logger()
+            logger.error(f"Error in answer_with_agent: {str(e)}", exc_info=True)
+            # Re-raise with more context
+            raise RuntimeError(f"AI agent error: {str(e)}") from e
 
-    # Extract text from Gemini response
-    response_text = extract_text_from_response(response)
-
-    response_text = sanitize_answer(response_text)
+        # Extract text from Gemini response
+        response_text = extract_text_from_response(response)
+        response_text = sanitize_answer(response_text)
 
     # If no response text was generated, provide a helpful error
     if not response_text or not response_text.strip():
@@ -729,8 +753,10 @@ def process_chat(
         )
 
     logger = get_logger()
-    grounding_stats = extract_grounding_stats_from_result(response)
-    web_search_query_count = int(grounding_stats["web_search_query_count"])
+    web_search_query_count = 0
+    if not should_refuse:
+        grounding_stats = extract_grounding_stats_from_result(response)
+        web_search_query_count = int(grounding_stats["web_search_query_count"])
 
     try:
         usage_snapshot = record_monthly_grounding_usage(
@@ -746,17 +772,25 @@ def process_chat(
         "decision_reason": decision_reason,
         "grounding_attached": grounding_attached,
         "web_search_queries": web_search_query_count,
+        "refused_scope_out": should_refuse,
+        "grounded_prompts_month_before": usage_before["grounded_prompts_count"],
+        "usage_month": usage_before["period_start"],
     }
     if usage_snapshot:
-        log_payload["usage_month"] = usage_snapshot["period_start"]
         log_payload["grounded_prompts_month"] = usage_snapshot["grounded_prompts_count"]
         log_payload["web_search_queries_month"] = usage_snapshot["web_search_queries_count"]
     logger.info("chat_grounding_usage %s", json.dumps(log_payload, sort_keys=True))
 
     # Save the assistant message
-    metadata = None
     if verbose:
-        metadata = extract_metadata_from_result(response)
+        if should_refuse:
+            metadata = {
+                "grounding": {
+                    "web_search_query_count": 0,
+                }
+            }
+        else:
+            metadata = extract_metadata_from_result(response)
         metadata["grounding"]["mode"] = mode
         metadata["grounding"]["decision_reason"] = decision_reason
         metadata["grounding"]["attached"] = grounding_attached

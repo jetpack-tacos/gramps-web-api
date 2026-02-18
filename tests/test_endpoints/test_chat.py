@@ -243,3 +243,31 @@ class TestChat(unittest.TestCase):
             assert kwargs["grounding_enabled"] is True
         finally:
             app.config["SEARCH_GROUNDING_MODE"] = old_mode
+
+    @patch("gramps_webapi.api.llm.run_agent")
+    def test_chat_scope_out_refuses_without_model_call(self, mock_run_agent):
+        """Out-of-scope prompts in auto mode should refuse before model call."""
+        mock_run_agent.return_value = _make_mock_gemini_response()
+        app = self.client.application
+        old_mode = app.config.get("SEARCH_GROUNDING_MODE")
+        app.config["SEARCH_GROUNDING_MODE"] = "auto"
+
+        try:
+            header = fetch_header(self.client, empty_db=True)
+            rv = self.client.get("/api/trees/", headers=header)
+            assert rv.status_code == 200
+            tree_id = rv.json[0]["id"]
+            rv = self.client.put(
+                f"/api/trees/{tree_id}", json={"min_role_ai": ROLE_OWNER}, headers=header
+            )
+            assert rv.status_code == 200
+
+            header = fetch_header(self.client, empty_db=True)
+            query = "Did Predator: Badlands get good movie reviews?"
+            rv = self.client.post("/api/chat/", json={"query": query}, headers=header)
+            assert rv.status_code == 200
+            assert "response" in rv.json
+            assert "I can only help with genealogy" in rv.json["response"]
+            mock_run_agent.assert_not_called()
+        finally:
+            app.config["SEARCH_GROUNDING_MODE"] = old_mode
