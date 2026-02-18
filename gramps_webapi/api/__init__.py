@@ -93,6 +93,10 @@ from .resources.reports import (
 )
 from .resources.repositories import RepositoriesResource, RepositoryResource
 from .resources.search import SearchIndexResource, SearchResource
+from .resources.search_grounding import (
+    SearchGroundingDiagnosticsResource,
+    SearchGroundingSettingsResource,
+)
 from .resources.sources import SourceResource, SourcesResource
 from .resources.tags import TagResource, TagsResource
 from .resources.tasks import TaskResource
@@ -393,6 +397,16 @@ register_endpt(SearchIndexResource, "/search/index/", "search_index")
 
 # Chat
 register_endpt(ChatResource, "/chat/", "chat")
+register_endpt(
+    SearchGroundingSettingsResource,
+    "/search-grounding/settings/",
+    "search-grounding-settings",
+)
+register_endpt(
+    SearchGroundingDiagnosticsResource,
+    "/search-grounding/diagnostics/",
+    "search-grounding-diagnostics",
+)
 
 # Person Insights
 register_endpt(

@@ -708,12 +708,12 @@ def process_chat(
         }
 
     grounding_decision = decide_chat_grounding(
-        raw_mode=current_app.config.get("SEARCH_GROUNDING_MODE", "auto"),
+        raw_mode=get_config("SEARCH_GROUNDING_MODE"),
         query=query,
         current_grounded_prompts_count=usage_before["grounded_prompts_count"],
-        free_tier_limit=current_app.config.get("SEARCH_GROUNDING_FREE_TIER_LIMIT", 5000),
-        soft_cap=current_app.config.get("SEARCH_GROUNDING_SOFT_CAP", 5000),
-        hard_cap=current_app.config.get("SEARCH_GROUNDING_HARD_CAP", 5000),
+        free_tier_limit=get_config("SEARCH_GROUNDING_FREE_TIER_LIMIT"),
+        soft_cap=get_config("SEARCH_GROUNDING_SOFT_CAP"),
+        hard_cap=get_config("SEARCH_GROUNDING_HARD_CAP"),
     )
     mode = grounding_decision["mode"]
     decision_reason = grounding_decision["decision_reason"]
@@ -791,9 +791,9 @@ def process_chat(
     )
     estimated_cost_usd = estimate_grounding_cost_usd(
         web_search_queries_count=current_queries_month,
-        free_tier_limit=current_app.config.get("SEARCH_GROUNDING_FREE_TIER_LIMIT", 5000),
-        cost_per_1000_queries_usd=current_app.config.get(
-            "SEARCH_GROUNDING_COST_PER_1000_QUERIES_USD", 14.0
+        free_tier_limit=get_config("SEARCH_GROUNDING_FREE_TIER_LIMIT"),
+        cost_per_1000_queries_usd=get_config(
+            "SEARCH_GROUNDING_COST_PER_1000_QUERIES_USD"
         ),
     )
     log_payload["estimated_cost_usd_month"] = estimated_cost_usd
@@ -806,8 +806,8 @@ def process_chat(
                 if usage_snapshot
                 else usage_before["grounded_prompts_count"]
             ),
-            soft_cap=current_app.config.get("SEARCH_GROUNDING_SOFT_CAP", 5000),
-            hard_cap=current_app.config.get("SEARCH_GROUNDING_HARD_CAP", 5000),
+            soft_cap=get_config("SEARCH_GROUNDING_SOFT_CAP"),
+            hard_cap=get_config("SEARCH_GROUNDING_HARD_CAP"),
         )
     except Exception:
         logger.warning("Failed to record threshold alerts", exc_info=True)
