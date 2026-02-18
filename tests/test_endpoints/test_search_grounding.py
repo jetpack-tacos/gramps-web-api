@@ -13,6 +13,7 @@
 
 import os
 import unittest
+import uuid
 from unittest.mock import patch
 
 from gramps.cli.clidbman import CLIDbManager
@@ -35,47 +36,58 @@ class TestSearchGroundingEndpoints(unittest.TestCase):
         self.dbman = CLIDbManager(DbState())
         dirpath, _name = self.dbman.create_new_db_cli(self.name, dbid="sqlite")
         tree = os.path.basename(dirpath)
-        with patch.dict("os.environ", {ENV_CONFIG_FILE: TEST_AUTH_CONFIG}):
+        with patch.dict(
+            "os.environ",
+            {
+                ENV_CONFIG_FILE: TEST_AUTH_CONFIG,
+                "USER_DB_URI": "sqlite://",
+                "GRAMPSWEB_USER_DB_URI": "sqlite://",
+            },
+        ):
             self.app = create_app(
                 config={"TESTING": True, "RATELIMIT_ENABLED": False},
                 config_from_env=False,
             )
         self.client = self.app.test_client()
+        user_suffix = uuid.uuid4().hex[:8]
+        member_name = f"member_{user_suffix}"
+        owner_name = f"owner_{user_suffix}"
+        admin_name = f"admin_{user_suffix}"
         with self.app.app_context():
             user_db.create_all()
             add_user(
-                name="member",
+                name=member_name,
                 password="123",
-                email="member@example.com",
+                email=f"{member_name}@example.com",
                 role=ROLE_MEMBER,
                 tree=tree,
             )
             add_user(
-                name="owner",
+                name=owner_name,
                 password="123",
-                email="owner@example.com",
+                email=f"{owner_name}@example.com",
                 role=ROLE_OWNER,
                 tree=tree,
             )
             add_user(
-                name="admin",
+                name=admin_name,
                 password="123",
-                email="admin@example.com",
+                email=f"{admin_name}@example.com",
                 role=ROLE_ADMIN,
                 tree=tree,
             )
         self.ctx = self.app.test_request_context()
         self.ctx.push()
         rv = self.client.post(
-            BASE_URL + "/token/", json={"username": "member", "password": "123"}
+            BASE_URL + "/token/", json={"username": member_name, "password": "123"}
         )
         self.header_member = {"Authorization": f"Bearer {rv.json['access_token']}"}
         rv = self.client.post(
-            BASE_URL + "/token/", json={"username": "owner", "password": "123"}
+            BASE_URL + "/token/", json={"username": owner_name, "password": "123"}
         )
         self.header_owner = {"Authorization": f"Bearer {rv.json['access_token']}"}
         rv = self.client.post(
-            BASE_URL + "/token/", json={"username": "admin", "password": "123"}
+            BASE_URL + "/token/", json={"username": admin_name, "password": "123"}
         )
         self.header_admin = {"Authorization": f"Bearer {rv.json['access_token']}"}
 

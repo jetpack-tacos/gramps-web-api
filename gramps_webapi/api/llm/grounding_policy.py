@@ -99,10 +99,14 @@ OUT_OF_SCOPE_HINTS = (
     "bitcoin",
     "recipe",
     "restaurant",
+    "sushi",
     "game",
     "video game",
     "programming",
     "code bug",
+    "sql",
+    "smartphone",
+    "camera",
 )
 
 
@@ -117,9 +121,7 @@ def _is_in_genealogy_scope(query: str) -> bool:
 
     has_genealogy_keyword = any(word in normalized for word in GENEALOGY_SCOPE_KEYWORDS)
     has_out_of_scope_hint = any(word in normalized for word in OUT_OF_SCOPE_HINTS)
-    has_person_name = _looks_like_person_name(query)
-
-    if has_out_of_scope_hint and not has_genealogy_keyword and not has_person_name:
+    if has_out_of_scope_hint and not has_genealogy_keyword:
         return False
     return True
 

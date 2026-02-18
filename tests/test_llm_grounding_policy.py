@@ -105,3 +105,25 @@ class TestGroundingPolicy(unittest.TestCase):
         )
         self.assertEqual(decision["decision_reason"], "cap_blocked_hard")
         self.assertFalse(decision["grounding_attached"])
+
+    def test_threshold_crossing_is_deterministic(self):
+        """Crossing soft/hard caps should change behavior deterministically."""
+        query = "what was life like in this place for this migration?"
+        cases = [
+            (3999, "context_gap", True),
+            (4000, "context_gap_soft_cap", True),
+            (4999, "context_gap_soft_cap", True),
+            (5000, "cap_blocked_hard", False),
+            (5001, "cap_blocked_hard", False),
+        ]
+        for grounded_count, expected_reason, expected_attached in cases:
+            decision = decide_chat_grounding(
+                "auto",
+                query=query,
+                current_grounded_prompts_count=grounded_count,
+                free_tier_limit=100000,
+                soft_cap=4000,
+                hard_cap=5000,
+            )
+            self.assertEqual(decision["decision_reason"], expected_reason)
+            self.assertEqual(decision["grounding_attached"], expected_attached)
