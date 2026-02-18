@@ -70,6 +70,18 @@ CONTEXT_GAP_KEYWORDS = (
     "history of",
 )
 
+HIGH_CONFIDENCE_CONTEXT_GAP_KEYWORDS = (
+    "historical context",
+    "what was life like",
+    "why did",
+    "migration pattern",
+    "migration patterns",
+    "moved from",
+    "moved to",
+    "place name change",
+    "border change",
+)
+
 OUT_OF_SCOPE_HINTS = (
     "movie",
     "film",
@@ -119,6 +131,13 @@ def _is_context_gap_query(query: str) -> bool:
     return any(word in normalized for word in CONTEXT_GAP_KEYWORDS)
 
 
+def _is_high_confidence_context_gap_query(query: str) -> bool:
+    normalized = query.lower().strip()
+    if not normalized:
+        return False
+    return any(word in normalized for word in HIGH_CONFIDENCE_CONTEXT_GAP_KEYWORDS)
+
+
 def _normalize_limit(value: Any) -> int | None:
     if value is None:
         return None
@@ -144,6 +163,8 @@ def decide_chat_grounding(
     query: str,
     current_grounded_prompts_count: int = 0,
     free_tier_limit: Any = None,
+    soft_cap: Any = None,
+    hard_cap: Any = None,
 ) -> dict[str, Any]:
     """Return grounding decision details for chat requests."""
     mode = normalize_search_grounding_mode(raw_mode)
@@ -183,14 +204,40 @@ def decide_chat_grounding(
         return {
             "mode": mode,
             "grounding_attached": False,
-            "decision_reason": "cap_blocked",
+            "decision_reason": "cap_blocked_free_tier",
             "should_refuse": False,
             "refusal_message": None,
         }
 
+    hard_limit = _normalize_limit(hard_cap)
+    if (
+        hard_limit is not None
+        and int(current_grounded_prompts_count) >= hard_limit
+    ):
+        return {
+            "mode": mode,
+            "grounding_attached": False,
+            "decision_reason": "cap_blocked_hard",
+            "should_refuse": False,
+            "refusal_message": None,
+        }
+
+    soft_limit = _normalize_limit(soft_cap)
+    in_soft_tightening = (
+        soft_limit is not None
+        and int(current_grounded_prompts_count) >= soft_limit
+    )
+
     if _is_context_gap_query(query):
-        decision_reason = "context_gap"
-        grounding_attached = True
+        if in_soft_tightening and not _is_high_confidence_context_gap_query(query):
+            decision_reason = "soft_cap_tightened"
+            grounding_attached = False
+        elif in_soft_tightening:
+            decision_reason = "context_gap_soft_cap"
+            grounding_attached = True
+        else:
+            decision_reason = "context_gap"
+            grounding_attached = True
     else:
         decision_reason = "tree_sufficient"
         grounding_attached = False

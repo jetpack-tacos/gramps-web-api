@@ -666,7 +666,9 @@ def process_chat(
     )
     from gramps_webapi.api.llm.grounding_policy import decide_chat_grounding
     from gramps_webapi.api.llm.grounding_usage import (
+        estimate_grounding_cost_usd,
         get_current_month_grounding_usage,
+        maybe_record_threshold_alerts,
         record_monthly_grounding_usage,
     )
     from gramps_webapi.api.resources.conversations import (
@@ -710,6 +712,8 @@ def process_chat(
         query=query,
         current_grounded_prompts_count=usage_before["grounded_prompts_count"],
         free_tier_limit=current_app.config.get("SEARCH_GROUNDING_FREE_TIER_LIMIT", 5000),
+        soft_cap=current_app.config.get("SEARCH_GROUNDING_SOFT_CAP", 5000),
+        hard_cap=current_app.config.get("SEARCH_GROUNDING_HARD_CAP", 5000),
     )
     mode = grounding_decision["mode"]
     decision_reason = grounding_decision["decision_reason"]
@@ -779,6 +783,54 @@ def process_chat(
     if usage_snapshot:
         log_payload["grounded_prompts_month"] = usage_snapshot["grounded_prompts_count"]
         log_payload["web_search_queries_month"] = usage_snapshot["web_search_queries_count"]
+
+    current_queries_month = (
+        usage_snapshot["web_search_queries_count"]
+        if usage_snapshot
+        else usage_before["web_search_queries_count"]
+    )
+    estimated_cost_usd = estimate_grounding_cost_usd(
+        web_search_queries_count=current_queries_month,
+        free_tier_limit=current_app.config.get("SEARCH_GROUNDING_FREE_TIER_LIMIT", 5000),
+        cost_per_1000_queries_usd=current_app.config.get(
+            "SEARCH_GROUNDING_COST_PER_1000_QUERIES_USD", 14.0
+        ),
+    )
+    log_payload["estimated_cost_usd_month"] = estimated_cost_usd
+
+    try:
+        alerts = maybe_record_threshold_alerts(
+            period_start=usage_before["period_start"],
+            grounded_prompts_count=(
+                usage_snapshot["grounded_prompts_count"]
+                if usage_snapshot
+                else usage_before["grounded_prompts_count"]
+            ),
+            soft_cap=current_app.config.get("SEARCH_GROUNDING_SOFT_CAP", 5000),
+            hard_cap=current_app.config.get("SEARCH_GROUNDING_HARD_CAP", 5000),
+        )
+    except Exception:
+        logger.warning("Failed to record threshold alerts", exc_info=True)
+        alerts = {"triggered": []}
+
+    if alerts["triggered"]:
+        logger.warning(
+            "chat_grounding_threshold_alert %s",
+            json.dumps(
+                {
+                    "usage_month": usage_before["period_start"],
+                    "triggered": alerts["triggered"],
+                    "grounded_prompts_month": (
+                        usage_snapshot["grounded_prompts_count"]
+                        if usage_snapshot
+                        else usage_before["grounded_prompts_count"]
+                    ),
+                },
+                sort_keys=True,
+            ),
+        )
+    log_payload["alerts_triggered"] = alerts["triggered"]
+
     logger.info("chat_grounding_usage %s", json.dumps(log_payload, sort_keys=True))
 
     # Save the assistant message
@@ -794,6 +846,8 @@ def process_chat(
         metadata["grounding"]["mode"] = mode
         metadata["grounding"]["decision_reason"] = decision_reason
         metadata["grounding"]["attached"] = grounding_attached
+        metadata["grounding"]["estimated_cost_usd_month"] = estimated_cost_usd
+        metadata["grounding"]["alerts_triggered"] = alerts["triggered"]
 
     if conversation_id:
         add_message(

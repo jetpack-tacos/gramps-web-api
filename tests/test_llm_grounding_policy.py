@@ -58,7 +58,7 @@ class TestGroundingPolicy(unittest.TestCase):
             current_grounded_prompts_count=5000,
             free_tier_limit=5000,
         )
-        self.assertEqual(decision["decision_reason"], "cap_blocked")
+        self.assertEqual(decision["decision_reason"], "cap_blocked_free_tier")
         self.assertFalse(decision["grounding_attached"])
 
     def test_scope_out_refusal(self):
@@ -70,3 +70,38 @@ class TestGroundingPolicy(unittest.TestCase):
         self.assertFalse(decision["grounding_attached"])
         self.assertTrue(decision["should_refuse"])
         self.assertIsNotNone(decision["refusal_message"])
+
+    def test_mode_auto_soft_cap_tightened(self):
+        """At soft cap, non-high-confidence context gaps should be tightened."""
+        decision = decide_chat_grounding(
+            "auto",
+            query="Give context for this family branch",
+            current_grounded_prompts_count=4500,
+            soft_cap=4000,
+            hard_cap=5000,
+        )
+        self.assertEqual(decision["decision_reason"], "soft_cap_tightened")
+        self.assertFalse(decision["grounding_attached"])
+
+    def test_mode_auto_soft_cap_high_confidence_keeps_grounding(self):
+        """At soft cap, high-confidence context gap prompts should still ground."""
+        decision = decide_chat_grounding(
+            "auto",
+            query="What was life like in this place for this migration?",
+            current_grounded_prompts_count=4500,
+            soft_cap=4000,
+            hard_cap=5000,
+        )
+        self.assertEqual(decision["decision_reason"], "context_gap_soft_cap")
+        self.assertTrue(decision["grounding_attached"])
+
+    def test_mode_auto_hard_cap_blocks(self):
+        """Hard cap should block grounding in auto mode."""
+        decision = decide_chat_grounding(
+            "auto",
+            query="why did they move from germany to pennsylvania?",
+            current_grounded_prompts_count=6000,
+            hard_cap=6000,
+        )
+        self.assertEqual(decision["decision_reason"], "cap_blocked_hard")
+        self.assertFalse(decision["grounding_attached"])

@@ -778,6 +778,8 @@ class SearchGroundingUsageMonthly(user_db.Model):  # type: ignore
         server_default=sa.func.now(),
         onupdate=sa.func.now(),
     )
+    soft_cap_alert_sent_at = mapped_column(sa.DateTime, nullable=True)
+    hard_cap_alert_sent_at = mapped_column(sa.DateTime, nullable=True)
 
     __table_args__ = (
         sa.Index(
