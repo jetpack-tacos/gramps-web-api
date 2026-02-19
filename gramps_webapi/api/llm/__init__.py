@@ -58,6 +58,20 @@ RULES:
 - Do not repeat the same finding in different words."""
 
 
+GRAMPS_ID_ROUTE_MAP = {
+    "I": "person",
+    "F": "family",
+    "E": "event",
+    "P": "place",
+    "S": "source",
+    "C": "citation",
+    "R": "repository",
+    "N": "note",
+    "M": "media",
+    "O": "media",
+}
+
+
 def sanitize_answer(answer: str) -> str:
     """Sanitize the LLM answer."""
     # some models convert relative URLs to absolute URLs with placeholder domains
@@ -74,6 +88,17 @@ def sanitize_answer(answer: str) -> str:
     answer = re.sub(r"^[-*]\s+", "", answer, flags=re.MULTILINE)
     # Remove horizontal rules: --- or *** or ___ (at start of line)
     answer = re.sub(r"^[-*_]{3,}\s*$", "", answer, flags=re.MULTILINE)
+
+    def _link_bare_gramps_id(match: re.Match[str]) -> str:
+        gramps_id = match.group(1)
+        route = GRAMPS_ID_ROUTE_MAP.get(gramps_id[0])
+        if not route:
+            return match.group(0)
+        return f"[{gramps_id}](/{route}/{gramps_id})"
+
+    # If the model emits bare IDs like [I0001] instead of markdown links,
+    # convert them so the chat UI can render them as clickable links.
+    answer = re.sub(r"\[([A-Z]\d+)\](?!\()", _link_bare_gramps_id, answer)
 
     return answer
 
