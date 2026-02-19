@@ -71,7 +71,7 @@ class TestRunAgentReliability(unittest.TestCase):
             "config"
         ]
         self.assertTrue(first_call_config.automatic_function_calling.disable)
-        self.assertEqual(first_call_config.http_options.timeout, 45)
+        self.assertEqual(first_call_config.http_options.timeout, 45000)
         self.assertEqual(first_call_config.http_options.retry_options.attempts, 2)
 
         final_call_config = mock_client.models.generate_content.call_args_list[2].kwargs[
@@ -138,7 +138,7 @@ class TestRunAgentReliability(unittest.TestCase):
         first_call_config = mock_client.models.generate_content.call_args_list[0].kwargs[
             "config"
         ]
-        self.assertEqual(first_call_config.http_options.timeout, 12)
+        self.assertEqual(first_call_config.http_options.timeout, 12000)
         self.assertEqual(first_call_config.http_options.retry_options.attempts, 1)
 
 

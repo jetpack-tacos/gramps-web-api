@@ -771,9 +771,11 @@ def run_agent(
     max_repeated_function_calls = max(1, max_repeated_function_calls)
     request_timeout_seconds = max(5, request_timeout_seconds)
     request_retry_attempts = max(1, request_retry_attempts)
+    request_timeout_ms = int(request_timeout_seconds * 1000)
 
     request_http_options = types.HttpOptions(
-        timeout=request_timeout_seconds,
+        # google-genai HttpOptions.timeout is milliseconds, not seconds.
+        timeout=request_timeout_ms,
         retry_options=types.HttpRetryOptions(attempts=request_retry_attempts),
     )
     # We manage tool loops ourselves; disable SDK auto function-calling recursion.
