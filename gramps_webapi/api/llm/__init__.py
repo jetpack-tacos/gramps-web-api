@@ -270,7 +270,7 @@ def answer_with_agent(
 
     try:
         logger.debug("Running Gemini agent with prompt: '%s'", prompt)
-        response = run_agent(
+        response, rehydrated_text = run_agent(
             prompt=prompt,
             deps=deps,
             model_name=model_name,
@@ -282,9 +282,9 @@ def answer_with_agent(
             request_timeout_seconds=int(request_timeout_seconds),
             request_retry_attempts=int(request_retry_attempts),
         )
-        response_text = extract_text_from_response(response)
+        response_text = rehydrated_text or extract_text_from_response(response)
         logger.debug("Gemini response (%d chars)", len(response_text))
-        return response
+        return response, rehydrated_text
     except ValueError as e:
         logger.error("Gemini configuration error: %s", e)
         raise RuntimeError("Error communicating with the AI model") from e

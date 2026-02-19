@@ -789,7 +789,7 @@ def process_chat(
                     retry_window = max(4, max_history_messages // 2)
                     attempt_history = history[-retry_window:]
 
-                response = answer_with_agent(
+                response, rehydrated_text = answer_with_agent(
                     prompt=query,
                     tree=tree,
                     include_private=include_private,
@@ -798,7 +798,7 @@ def process_chat(
                     grounding_enabled=grounding_attached,
                 )
 
-                response_text = extract_text_from_response(response)
+                response_text = rehydrated_text or extract_text_from_response(response)
                 response_text = sanitize_answer(response_text)
 
                 elapsed_ms = int((time.perf_counter() - attempt_started) * 1000)

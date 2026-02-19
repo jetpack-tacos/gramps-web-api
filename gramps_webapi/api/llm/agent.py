@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re
 from typing import Any
 
 from google import genai
@@ -746,6 +747,54 @@ def execute_tool_call(
         return f"Unknown tool: {tool_name}"
 
 
+# Pattern matching [Name](/person/...), [Name](/family/...), [Name](/event/...)
+_LINK_PATTERN = _re.compile(r'\[([^\]]+)\]\(/(person|family|event)/[^\)]+\)')
+
+
+def _collect_links_from_tool_results(tool_result_cache: dict[str, str]) -> dict[str, str]:
+    """Collect all [Name](/path) links that appeared in tool results.
+
+    Returns a dict mapping bare name -> full markdown link, e.g.
+    {"Harry James Olson": "[Harry James Olson](/person/I0001)"}.
+    Longer names are found first so the dict prefers the most specific form.
+    """
+    links: dict[str, str] = {}
+    for result_text in sorted(tool_result_cache.values(), key=len, reverse=True):
+        for match in _LINK_PATTERN.finditer(result_text):
+            name = match.group(1)
+            if name not in links and len(name) >= 4:
+                links[name] = match.group(0)
+    return links
+
+
+def _rehydrate_links(text: str, links: dict[str, str]) -> str:
+    """Re-insert person/record links that appeared in tool results but are absent
+    from the response (i.e., the model wrote bare names instead of linked ones).
+
+    Processes longer names first to avoid partial-name collisions.
+    Skips names that are already inside markdown link brackets.
+    """
+    if not links:
+        return text
+
+    # Track names already linked in the text
+    already_linked = {m.group(1) for m in _LINK_PATTERN.finditer(text)}
+
+    for name in sorted(links, key=len, reverse=True):
+        if name in already_linked:
+            continue
+
+        full_link = links[name]
+        escaped = _re.escape(name)
+        # Match bare name: not immediately after '[' and not immediately before ']'
+        pattern = r'(?<!\[)' + escaped + r'(?!\])'
+        if _re.search(pattern, text):
+            text = _re.sub(pattern, full_link, text)
+            already_linked.add(name)
+
+    return text
+
+
 def run_agent(
     prompt: str,
     deps: AgentDeps,
@@ -996,4 +1045,19 @@ def run_agent(
                 raise last_model_error
             raise
 
-    return response
+    # Post-process: rehydrate any links that the model dropped from tool results
+    rehydrated_text: str | None = None
+    if tool_result_cache:
+        collected_links = _collect_links_from_tool_results(tool_result_cache)
+        if collected_links and response.candidates and response.candidates[0].content.parts:
+            raw_text = "".join(
+                part.text
+                for part in response.candidates[0].content.parts
+                if part.text
+            )
+            if raw_text:
+                rehydrated = _rehydrate_links(raw_text, collected_links)
+                if rehydrated != raw_text:
+                    rehydrated_text = rehydrated
+
+    return response, rehydrated_text
