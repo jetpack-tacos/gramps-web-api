@@ -72,7 +72,7 @@ class TestRunAgentReliability(unittest.TestCase):
         ]
         self.assertTrue(first_call_config.automatic_function_calling.disable)
         self.assertEqual(first_call_config.http_options.timeout, 45000)
-        self.assertEqual(first_call_config.http_options.retry_options.attempts, 2)
+        self.assertEqual(first_call_config.http_options.retry_options.attempts, 1)
 
         final_call_config = mock_client.models.generate_content.call_args_list[2].kwargs[
             "config"
@@ -140,6 +140,40 @@ class TestRunAgentReliability(unittest.TestCase):
         ]
         self.assertEqual(first_call_config.http_options.timeout, 12000)
         self.assertEqual(first_call_config.http_options.retry_options.attempts, 1)
+
+    @patch("gramps_webapi.api.llm.agent.execute_tool_call")
+    @patch("gramps_webapi.api.llm.agent.genai.Client")
+    def test_timeout_after_tool_results_falls_back_to_final_synthesis(
+        self, mock_client_ctor, mock_execute_tool_call
+    ):
+        """If a later model call times out, synthesize from gathered tool data."""
+        mock_execute_tool_call.return_value = "tool-result"
+        function_call = _function_call_response("filter_people", {"surname": "Olson"})
+        final_answer = _text_response("Recovered from partial context")
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = [
+            function_call,
+            RuntimeError("read timeout"),
+            final_answer,
+        ]
+        mock_client_ctor.return_value = mock_client
+
+        response = run_agent(
+            prompt="How many Olson ancestors are there?",
+            deps=self.deps,
+            model_name="gemini-3-flash-preview",
+            grounding_enabled=False,
+        )
+
+        self.assertIs(response, final_answer)
+        self.assertEqual(mock_execute_tool_call.call_count, 1)
+        self.assertEqual(mock_client.models.generate_content.call_count, 3)
+
+        synthesis_call = mock_client.models.generate_content.call_args_list[2].kwargs
+        synthesis_contents = synthesis_call["contents"]
+        synthesis_instruction = synthesis_contents[-1].parts[0].text
+        self.assertIn("previous model request failed", synthesis_instruction.lower())
 
 
 if __name__ == "__main__":

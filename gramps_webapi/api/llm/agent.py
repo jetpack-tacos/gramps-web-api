@@ -715,7 +715,7 @@ def run_agent(
     max_iterations: int = 10,
     max_repeated_function_calls: int = 2,
     request_timeout_seconds: int = 45,
-    request_retry_attempts: int = 2,
+    request_retry_attempts: int = 1,
 ) -> types.GenerateContentResponse:
     """Run the Gemini agent with tool calling loop.
 
@@ -751,6 +751,7 @@ def run_agent(
         contents.extend(history)
 
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+    base_contents_len = len(contents)
 
     if grounding_enabled:
         tool_config = types.Tool(
@@ -766,6 +767,7 @@ def run_agent(
     previous_signatures: list[str] | None = None
     repeated_signature_rounds = 0
     tool_result_cache: dict[str, str] = {}
+    last_model_error: Exception | None = None
 
     max_iterations = max(1, max_iterations)
     max_repeated_function_calls = max(1, max_repeated_function_calls)
@@ -789,11 +791,20 @@ def run_agent(
             automatic_function_calling=automatic_function_calling,
             http_options=request_http_options,
         )
-        response = client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=config,
-        )
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
+        except Exception as err:
+            last_model_error = err
+            # If we already collected tool outputs, synthesize an answer from those
+            # results instead of restarting the whole agent run.
+            if len(contents) > base_contents_len:
+                forced_synthesis = True
+                break
+            raise
 
         # Check if the model wants to call tools
         if not response.candidates or not response.candidates[0].content.parts:
@@ -854,14 +865,22 @@ def run_agent(
         # Add tool results back to the conversation
         contents.append(types.Content(role="user", parts=function_response_parts))
 
-    # If we hit repeated tool calls or max iterations, force a final text response.
+    # If we hit repeated tool calls, max iterations, or a late model error, force
+    # a final text response from the context we've already gathered.
     if forced_synthesis or (iteration == max_iterations - 1 and has_function_call):
+        synthesis_instruction = (
+            "Please provide your answer now based on the information you've gathered. "
+            "Synthesize what you've learned into a helpful response."
+        )
+        if last_model_error is not None:
+            synthesis_instruction = (
+                "A previous model request failed. Provide the best answer you can "
+                "using only the information already gathered in this conversation."
+            )
         contents.append(
             types.Content(
                 role="user",
-                parts=[types.Part.from_text(
-                    text="Please provide your answer now based on the information you've gathered. Synthesize what you've learned into a helpful response."
-                )],
+                parts=[types.Part.from_text(text=synthesis_instruction)],
             )
         )
         # Disable tools for this final synthesis step to prevent another tool-call loop.
@@ -871,10 +890,15 @@ def run_agent(
             automatic_function_calling=automatic_function_calling,
             http_options=request_http_options,
         )
-        response = client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=final_config,
-        )
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=final_config,
+            )
+        except Exception:
+            if last_model_error is not None:
+                raise last_model_error
+            raise
 
     return response

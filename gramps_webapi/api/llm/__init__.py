@@ -227,7 +227,7 @@ def answer_with_agent(
     max_tool_iterations = config.get("LLM_AGENT_MAX_TOOL_ITERATIONS", 10)
     max_repeated_tool_rounds = config.get("LLM_AGENT_MAX_REPEATED_TOOL_ROUNDS", 2)
     request_timeout_seconds = config.get("LLM_AGENT_REQUEST_TIMEOUT_SECONDS", 45)
-    request_retry_attempts = config.get("LLM_AGENT_REQUEST_RETRY_ATTEMPTS", 2)
+    request_retry_attempts = config.get("LLM_AGENT_REQUEST_RETRY_ATTEMPTS", 1)
 
     if not model_name:
         raise ValueError("No LLM model specified")
