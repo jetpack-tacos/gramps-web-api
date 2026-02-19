@@ -143,6 +143,46 @@ class TestRunAgentReliability(unittest.TestCase):
 
     @patch("gramps_webapi.api.llm.agent.execute_tool_call")
     @patch("gramps_webapi.api.llm.agent.genai.Client")
+    def test_tree_specific_no_tool_first_response_triggers_verification_pass(
+        self, mock_client_ctor, mock_execute_tool_call
+    ):
+        """Tree-specific answers without tool calls should trigger a verification pass."""
+        mock_execute_tool_call.return_value = "verified-tool-result"
+        first_unverified = _text_response("No, that person is not in your tree.")
+        verification_call = _function_call_response(
+            "search_genealogy_database", {"query": "Mayflower pilot", "max_results": 20}
+        )
+        final_answer = _text_response("Actually they are in your tree [I1234].")
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = [
+            first_unverified,
+            verification_call,
+            final_answer,
+        ]
+        mock_client_ctor.return_value = mock_client
+
+        response = run_agent(
+            prompt="Does this include the Mayflower's pilot in our database?",
+            deps=self.deps,
+            model_name="gemini-3-flash-preview",
+            grounding_enabled=False,
+        )
+
+        self.assertIs(response, final_answer)
+        self.assertEqual(mock_execute_tool_call.call_count, 1)
+        self.assertEqual(mock_client.models.generate_content.call_count, 3)
+
+        second_call_contents = mock_client.models.generate_content.call_args_list[1].kwargs[
+            "contents"
+        ]
+        self.assertIn(
+            "verify this answer against the family tree",
+            second_call_contents[-1].parts[0].text.lower(),
+        )
+
+    @patch("gramps_webapi.api.llm.agent.execute_tool_call")
+    @patch("gramps_webapi.api.llm.agent.genai.Client")
     def test_timeout_after_tool_results_falls_back_to_final_synthesis(
         self, mock_client_ctor, mock_execute_tool_call
     ):

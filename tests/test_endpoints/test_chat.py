@@ -157,6 +157,49 @@ class TestChat(unittest.TestCase):
         finally:
             app.config["LLM_CHAT_MAX_ATTEMPTS"] = old_attempts
 
+    @patch("gramps_webapi.api.llm.tools.search_genealogy_database")
+    @patch("gramps_webapi.api.llm.run_agent")
+    def test_chat_returns_tree_lookup_fallback_after_model_timeouts(
+        self, mock_run_agent, mock_search_lookup
+    ):
+        """If model attempts fail, chat should fall back to direct tree lookup."""
+        mock_run_agent.side_effect = RuntimeError("model timeout")
+        mock_search_lookup.return_value = (
+            "Found records:\n"
+            "[William Bradford](/person/I0573)\n"
+            "[Thomas Francis Clarke Sr.](/person/I501731)"
+        )
+
+        app = self.client.application
+        old_attempts = app.config.get("LLM_CHAT_MAX_ATTEMPTS")
+        app.config["LLM_CHAT_MAX_ATTEMPTS"] = 2
+
+        try:
+            header = fetch_header(self.client, empty_db=True)
+            rv = self.client.get("/api/trees/", headers=header)
+            assert rv.status_code == 200
+            tree_id = rv.json[0]["id"]
+            rv = self.client.put(
+                f"/api/trees/{tree_id}",
+                json={"min_role_ai": ROLE_OWNER},
+                headers=header,
+            )
+            assert rv.status_code == 200
+
+            header = fetch_header(self.client, empty_db=True)
+            rv = self.client.post(
+                "/api/chat/",
+                json={"query": "How many ancestors came over on the Mayflower?"},
+                headers=header,
+            )
+            assert rv.status_code == 200
+            assert "direct lookup from your tree" in rv.json["response"]
+            assert "/person/I0573" in rv.json["response"]
+            assert mock_run_agent.call_count == 2
+            assert mock_search_lookup.call_count == 1
+        finally:
+            app.config["LLM_CHAT_MAX_ATTEMPTS"] = old_attempts
+
     @patch("gramps_webapi.api.llm.run_agent")
     def test_chat_background(self, mock_run_agent):
         mock_run_agent.return_value = _make_mock_gemini_response()

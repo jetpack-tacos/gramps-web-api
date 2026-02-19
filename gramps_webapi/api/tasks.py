@@ -665,7 +665,10 @@ def process_chat(
         extract_text_from_response,
         sanitize_answer,
     )
+    from gramps_webapi.api.llm.agent import _ToolContext
+    from gramps_webapi.api.llm.deps import AgentDeps
     from gramps_webapi.api.llm.grounding_policy import decide_chat_grounding
+    from gramps_webapi.api.llm.tools import search_genealogy_database
     from gramps_webapi.api.llm.grounding_usage import (
         estimate_grounding_cost_usd,
         get_current_month_grounding_usage,
@@ -740,6 +743,31 @@ def process_chat(
     grounding_attached = bool(grounding_decision["grounding_attached"])
     should_refuse = bool(grounding_decision.get("should_refuse", False))
     refusal_message = grounding_decision.get("refusal_message")
+    fallback_used = False
+
+    def _build_tree_lookup_fallback() -> str | None:
+        """Build a deterministic tree lookup fallback response."""
+        try:
+            deps = AgentDeps(
+                tree=tree,
+                include_private=include_private,
+                max_context_length=int(get_config("LLM_MAX_CONTEXT_LENGTH") or 50000),
+                user_id=user_id,
+            )
+            lookup = search_genealogy_database(
+                _ToolContext(deps),
+                query=query,
+                max_results=12,
+            )
+            if not lookup or not lookup.strip():
+                return None
+            return (
+                "The model timed out, so here is a direct lookup from your tree:\n\n"
+                f"{lookup}"
+            )
+        except Exception:
+            logger.warning("chat_tree_lookup_fallback_failed", exc_info=True)
+            return None
 
     metadata = None
     response = None
@@ -829,21 +857,34 @@ def process_chat(
 
     # If no response text was generated, provide a helpful error
     if not response_text or not response_text.strip():
+        fallback_text = None
         if not should_refuse and last_exception is not None:
-            logger.error(
-                "chat_model_exhausted_attempts",
-                exc_info=last_exception,
+            logger.error("chat_model_exhausted_attempts", exc_info=last_exception)
+            fallback_text = _build_tree_lookup_fallback()
+        if fallback_text and fallback_text.strip():
+            response_text = sanitize_answer(fallback_text)
+            fallback_used = True
+            logger.warning(
+                "chat_model_fallback_used %s",
+                json.dumps(
+                    {
+                        "conversation_id": conversation_id,
+                        "reason": "model_attempts_exhausted",
+                    },
+                    sort_keys=True,
+                ),
             )
-        logger.error(
-            "Agent completed but generated no response text. This usually means the agent hit the iteration limit while calling tools."
-        )
-        raise RuntimeError(
-            "The AI assistant was unable to generate a response after processing your query. "
-            "This might indicate the query is too complex or requires simplification. "
-            "Please try asking a more specific question."
-        )
+        else:
+            logger.error(
+                "Agent completed but generated no response text. This usually means the agent hit the iteration limit while calling tools."
+            )
+            raise RuntimeError(
+                "The AI assistant was unable to generate a response after processing your query. "
+                "This might indicate the query is too complex or requires simplification. "
+                "Please try asking a more specific question."
+            )
     web_search_query_count = 0
-    if not should_refuse:
+    if not should_refuse and response is not None:
         grounding_stats = extract_grounding_stats_from_result(response)
         web_search_query_count = int(grounding_stats["web_search_query_count"])
 
@@ -865,6 +906,7 @@ def process_chat(
         "grounded_prompts_month_before": usage_before["grounded_prompts_count"],
         "usage_month": usage_before["period_start"],
     }
+    log_payload["fallback_used"] = fallback_used
     if usage_snapshot:
         log_payload["grounded_prompts_month"] = usage_snapshot["grounded_prompts_count"]
         log_payload["web_search_queries_month"] = usage_snapshot["web_search_queries_count"]
@@ -925,6 +967,16 @@ def process_chat(
                 "grounding": {
                     "web_search_query_count": 0,
                 }
+            }
+        elif response is None:
+            metadata = {
+                "grounding": {
+                    "web_search_query_count": 0,
+                },
+                "fallback": {
+                    "used": True,
+                    "reason": "model_attempts_exhausted",
+                },
             }
         else:
             metadata = extract_metadata_from_result(response)

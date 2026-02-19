@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from google import genai
@@ -156,6 +157,44 @@ class _ToolContext:
 
     def __init__(self, deps: AgentDeps):
         self.deps = deps
+
+
+_TREE_VERIFICATION_KEYWORDS = (
+    "ancestor",
+    "descendant",
+    "related",
+    "relationship",
+    "family tree",
+    "in our database",
+    "in my database",
+    "in the tree",
+    "gramps",
+    "mayflower",
+    "who is",
+    "how many",
+    "mother",
+    "father",
+    "grandfather",
+    "grandmother",
+)
+
+
+def _prompt_requires_tree_verification(prompt: str) -> bool:
+    """Heuristic for prompts that should be validated against tree data."""
+    lower = prompt.lower()
+    return any(keyword in lower for keyword in _TREE_VERIFICATION_KEYWORDS)
+
+
+def _response_contains_tree_evidence(response: types.GenerateContentResponse) -> bool:
+    """Return True if response text contains Gramps IDs or object links."""
+    if not response.candidates or not response.candidates[0].content.parts:
+        return False
+    text = "".join(part.text or "" for part in response.candidates[0].content.parts)
+    if not text:
+        return False
+    if re.search(r"/(person|family|event|place|source|citation|repository|note|media)/[A-Z]\d+", text):
+        return True
+    return bool(re.search(r"\b[A-Z]\d{3,}\b", text))
 
 
 def _make_tool_wrappers(deps: AgentDeps) -> list[types.FunctionDeclaration]:
@@ -764,6 +803,7 @@ def run_agent(
     iteration = 0
     has_function_call = False
     forced_synthesis = False
+    force_verification_prompt_sent = False
     previous_signatures: list[str] | None = None
     repeated_signature_rounds = 0
     tool_result_cache: dict[str, str] = {}
@@ -816,6 +856,31 @@ def run_agent(
         )
 
         if not has_function_call:
+            if (
+                not grounding_enabled
+                and not force_verification_prompt_sent
+                and _prompt_requires_tree_verification(prompt)
+                and not _response_contains_tree_evidence(response)
+            ):
+                # The model answered without touching tree tools; force one
+                # verification pass so tree-specific claims are grounded.
+                force_verification_prompt_sent = True
+                contents.append(response.candidates[0].content)
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_text(
+                                text=(
+                                    "Before finalizing, verify this answer against the "
+                                    "family tree by calling relevant tools. Then provide "
+                                    "a corrected answer with person or record links."
+                                )
+                            )
+                        ],
+                    )
+                )
+                continue
             break
 
         signatures: list[str] = []
