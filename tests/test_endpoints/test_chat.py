@@ -125,6 +125,39 @@ class TestChat(unittest.TestCase):
         assert "metadata" not in rv.json  # Should not include metadata by default
 
     @patch("gramps_webapi.api.llm.run_agent")
+    def test_chat_retries_after_empty_first_attempt(self, mock_run_agent):
+        """Chat should retry once when the first model attempt returns empty text."""
+        mock_run_agent.side_effect = [
+            _make_mock_gemini_response(text=""),
+            _make_mock_gemini_response(text="Recovered response"),
+        ]
+
+        app = self.client.application
+        old_attempts = app.config.get("LLM_CHAT_MAX_ATTEMPTS")
+        app.config["LLM_CHAT_MAX_ATTEMPTS"] = 2
+
+        try:
+            header = fetch_header(self.client, empty_db=True)
+            rv = self.client.get("/api/trees/", headers=header)
+            assert rv.status_code == 200
+            tree_id = rv.json[0]["id"]
+            rv = self.client.put(
+                f"/api/trees/{tree_id}",
+                json={"min_role_ai": ROLE_OWNER},
+                headers=header,
+            )
+            assert rv.status_code == 200
+
+            header = fetch_header(self.client, empty_db=True)
+            query = "What should I have for dinner tonight?"
+            rv = self.client.post("/api/chat/", json={"query": query}, headers=header)
+            assert rv.status_code == 200
+            assert rv.json["response"] == "Recovered response"
+            assert mock_run_agent.call_count == 2
+        finally:
+            app.config["LLM_CHAT_MAX_ATTEMPTS"] = old_attempts
+
+    @patch("gramps_webapi.api.llm.run_agent")
     def test_chat_background(self, mock_run_agent):
         mock_run_agent.return_value = _make_mock_gemini_response()
 

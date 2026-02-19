@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -711,6 +712,8 @@ def run_agent(
     system_prompt_override: str | None = None,
     history: list[types.Content] | None = None,
     grounding_enabled: bool = True,
+    max_iterations: int = 10,
+    max_repeated_function_calls: int = 2,
 ) -> types.GenerateContentResponse:
     """Run the Gemini agent with tool calling loop.
 
@@ -757,9 +760,15 @@ def run_agent(
         temperature=0.2,
     )
 
-    max_iterations = 10
     iteration = 0
     has_function_call = False
+    forced_synthesis = False
+    previous_signatures: list[str] | None = None
+    repeated_signature_rounds = 0
+    tool_result_cache: dict[str, str] = {}
+
+    max_iterations = max(1, max_iterations)
+    max_repeated_function_calls = max(1, max_repeated_function_calls)
 
     for iteration in range(max_iterations):
         response = client.models.generate_content(
@@ -780,6 +789,26 @@ def run_agent(
         if not has_function_call:
             break
 
+        signatures: list[str] = []
+        for part in response.candidates[0].content.parts:
+            if part.function_call is not None:
+                tool_name = part.function_call.name
+                tool_args = (
+                    dict(part.function_call.args) if part.function_call.args else {}
+                )
+                signature = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, default=str)}"
+                signatures.append(signature)
+
+        if previous_signatures is not None and signatures == previous_signatures:
+            repeated_signature_rounds += 1
+        else:
+            repeated_signature_rounds = 0
+        previous_signatures = signatures
+
+        if repeated_signature_rounds >= max_repeated_function_calls:
+            forced_synthesis = True
+            break
+
         # Add the model's response (with function calls) to history
         contents.append(response.candidates[0].content)
 
@@ -789,8 +818,13 @@ def run_agent(
             if part.function_call is not None:
                 tool_name = part.function_call.name
                 tool_args = dict(part.function_call.args) if part.function_call.args else {}
+                signature = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, default=str)}"
 
-                result = execute_tool_call(tool_name, tool_args, deps)
+                if signature in tool_result_cache:
+                    result = tool_result_cache[signature]
+                else:
+                    result = execute_tool_call(tool_name, tool_args, deps)
+                    tool_result_cache[signature] = result
 
                 function_response_parts.append(
                     types.Part.from_function_response(
@@ -802,9 +836,8 @@ def run_agent(
         # Add tool results back to the conversation
         contents.append(types.Content(role="user", parts=function_response_parts))
 
-    # If we hit the max iterations and the last response still has function calls,
-    # force a final text response by sending tool results with a prompt to synthesize
-    if iteration == max_iterations - 1 and has_function_call:
+    # If we hit repeated tool calls or max iterations, force a final text response.
+    if forced_synthesis or (iteration == max_iterations - 1 and has_function_call):
         contents.append(
             types.Content(
                 role="user",
@@ -813,10 +846,15 @@ def run_agent(
                 )],
             )
         )
+        # Disable tools for this final synthesis step to prevent another tool-call loop.
+        final_config = types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=0.2,
+        )
         response = client.models.generate_content(
             model=model_name,
             contents=contents,
-            config=config,
+            config=final_config,
         )
 
     return response

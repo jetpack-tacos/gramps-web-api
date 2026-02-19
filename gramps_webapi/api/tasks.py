@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from gettext import gettext as _
 from http import HTTPStatus
@@ -679,6 +680,8 @@ def process_chat(
         get_conversation_history,
     )
 
+    logger = get_logger()
+
     # If conversation_id provided, load history from DB instead of client
     if conversation_id:
         history = get_conversation_history(conversation_id)
@@ -691,6 +694,23 @@ def process_chat(
         )
         conversation_id = conv.id
         cleanup_old_conversations(user_id, tree)
+
+    # Keep history bounded for performance and latency predictability.
+    max_history_messages = int(get_config("LLM_CHAT_HISTORY_MAX_MESSAGES") or 16)
+    if history and max_history_messages > 0 and len(history) > max_history_messages:
+        trimmed_count = len(history) - max_history_messages
+        history = history[-max_history_messages:]
+        logger.info(
+            "chat_history_trimmed %s",
+            json.dumps(
+                {
+                    "conversation_id": conversation_id,
+                    "trimmed_messages": trimmed_count,
+                    "history_messages_after_trim": len(history),
+                },
+                sort_keys=True,
+            ),
+        )
 
     # Save the user message
     if conversation_id:
@@ -722,41 +742,106 @@ def process_chat(
     refusal_message = grounding_decision.get("refusal_message")
 
     metadata = None
+    response = None
+    response_text = ""
     if should_refuse:
         response_text = refusal_message or (
             "I can only help with genealogy and family-history questions."
         )
     else:
-        try:
-            response = answer_with_agent(
-                prompt=query,
-                tree=tree,
-                include_private=include_private,
-                user_id=user_id,
-                history=history,
-                grounding_enabled=grounding_attached,
-            )
-        except Exception as e:
-            logger = get_logger()
-            logger.error(f"Error in answer_with_agent: {str(e)}", exc_info=True)
-            # Re-raise with more context
-            raise RuntimeError(f"AI agent error: {str(e)}") from e
+        max_attempts = max(1, int(get_config("LLM_CHAT_MAX_ATTEMPTS") or 2))
+        last_exception: Exception | None = None
 
-        # Extract text from Gemini response
-        response_text = extract_text_from_response(response)
-        response_text = sanitize_answer(response_text)
+        for attempt in range(1, max_attempts + 1):
+            attempt_started = time.perf_counter()
+            try:
+                # Retry with a tighter history window to reduce loop pressure and latency.
+                attempt_history = history
+                if attempt > 1 and history:
+                    retry_window = max(4, max_history_messages // 2)
+                    attempt_history = history[-retry_window:]
+
+                response = answer_with_agent(
+                    prompt=query,
+                    tree=tree,
+                    include_private=include_private,
+                    user_id=user_id,
+                    history=attempt_history,
+                    grounding_enabled=grounding_attached,
+                )
+
+                response_text = extract_text_from_response(response)
+                response_text = sanitize_answer(response_text)
+
+                elapsed_ms = int((time.perf_counter() - attempt_started) * 1000)
+                logger.info(
+                    "chat_model_attempt %s",
+                    json.dumps(
+                        {
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "elapsed_ms": elapsed_ms,
+                            "response_chars": len(response_text or ""),
+                            "conversation_id": conversation_id,
+                        },
+                        sort_keys=True,
+                    ),
+                )
+
+                if response_text and response_text.strip():
+                    break
+
+                last_exception = RuntimeError(
+                    "AI agent completed without response text"
+                )
+                logger.warning(
+                    "chat_model_empty_response %s",
+                    json.dumps(
+                        {
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "conversation_id": conversation_id,
+                        },
+                        sort_keys=True,
+                    ),
+                )
+
+            except Exception as e:
+                elapsed_ms = int((time.perf_counter() - attempt_started) * 1000)
+                last_exception = e
+                logger.error(
+                    "chat_model_attempt_error %s",
+                    json.dumps(
+                        {
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "elapsed_ms": elapsed_ms,
+                            "conversation_id": conversation_id,
+                            "error": str(e),
+                        },
+                        sort_keys=True,
+                    ),
+                    exc_info=True,
+                )
+
+            if attempt >= max_attempts:
+                break
 
     # If no response text was generated, provide a helpful error
     if not response_text or not response_text.strip():
-        logger = get_logger()
-        logger.error("Agent completed but generated no response text. This usually means the agent hit the iteration limit while calling tools.")
+        if not should_refuse and last_exception is not None:
+            logger.error(
+                "chat_model_exhausted_attempts",
+                exc_info=last_exception,
+            )
+        logger.error(
+            "Agent completed but generated no response text. This usually means the agent hit the iteration limit while calling tools."
+        )
         raise RuntimeError(
             "The AI assistant was unable to generate a response after processing your query. "
             "This might indicate the query is too complex or requires simplification. "
             "Please try asking a more specific question."
         )
-
-    logger = get_logger()
     web_search_query_count = 0
     if not should_refuse:
         grounding_stats = extract_grounding_stats_from_result(response)
