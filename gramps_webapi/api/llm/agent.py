@@ -714,6 +714,8 @@ def run_agent(
     grounding_enabled: bool = True,
     max_iterations: int = 10,
     max_repeated_function_calls: int = 2,
+    request_timeout_seconds: int = 45,
+    request_retry_attempts: int = 2,
 ) -> types.GenerateContentResponse:
     """Run the Gemini agent with tool calling loop.
 
@@ -727,6 +729,10 @@ def run_agent(
         system_prompt_override: Optional override for the system prompt
         history: Optional conversation history as Gemini Content objects
         grounding_enabled: Whether to attach Google Search grounding
+        max_iterations: Maximum manual tool-call loop iterations
+        max_repeated_function_calls: Max repeated identical tool rounds before forced synthesis
+        request_timeout_seconds: Per Gemini request timeout (seconds)
+        request_retry_attempts: Per Gemini request retry attempts
 
     Returns:
         The final GenerateContentResponse from Gemini
@@ -754,12 +760,6 @@ def run_agent(
     else:
         tool_config = types.Tool(function_declarations=tool_declarations)
 
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        tools=[tool_config],
-        temperature=0.2,
-    )
-
     iteration = 0
     has_function_call = False
     forced_synthesis = False
@@ -769,8 +769,24 @@ def run_agent(
 
     max_iterations = max(1, max_iterations)
     max_repeated_function_calls = max(1, max_repeated_function_calls)
+    request_timeout_seconds = max(5, request_timeout_seconds)
+    request_retry_attempts = max(1, request_retry_attempts)
+
+    request_http_options = types.HttpOptions(
+        timeout=request_timeout_seconds,
+        retry_options=types.HttpRetryOptions(attempts=request_retry_attempts),
+    )
+    # We manage tool loops ourselves; disable SDK auto function-calling recursion.
+    automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True)
 
     for iteration in range(max_iterations):
+        config = types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            tools=[tool_config],
+            temperature=0.2,
+            automatic_function_calling=automatic_function_calling,
+            http_options=request_http_options,
+        )
         response = client.models.generate_content(
             model=model_name,
             contents=contents,
@@ -850,6 +866,8 @@ def run_agent(
         final_config = types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=0.2,
+            automatic_function_calling=automatic_function_calling,
+            http_options=request_http_options,
         )
         response = client.models.generate_content(
             model=model_name,

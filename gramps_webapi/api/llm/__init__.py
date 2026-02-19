@@ -226,6 +226,8 @@ def answer_with_agent(
     system_prompt_override = config.get("LLM_SYSTEM_PROMPT")
     max_tool_iterations = config.get("LLM_AGENT_MAX_TOOL_ITERATIONS", 10)
     max_repeated_tool_rounds = config.get("LLM_AGENT_MAX_REPEATED_TOOL_ROUNDS", 2)
+    request_timeout_seconds = config.get("LLM_AGENT_REQUEST_TIMEOUT_SECONDS", 45)
+    request_retry_attempts = config.get("LLM_AGENT_REQUEST_RETRY_ATTEMPTS", 2)
 
     if not model_name:
         raise ValueError("No LLM model specified")
@@ -252,6 +254,8 @@ def answer_with_agent(
             grounding_enabled=grounding_enabled,
             max_iterations=int(max_tool_iterations),
             max_repeated_function_calls=int(max_repeated_tool_rounds),
+            request_timeout_seconds=int(request_timeout_seconds),
+            request_retry_attempts=int(request_retry_attempts),
         )
         response_text = extract_text_from_response(response)
         logger.info("Gemini response (%d chars): %s", len(response_text), response_text[:500])

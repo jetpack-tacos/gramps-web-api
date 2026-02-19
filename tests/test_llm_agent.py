@@ -67,6 +67,13 @@ class TestRunAgentReliability(unittest.TestCase):
         self.assertEqual(mock_execute_tool_call.call_count, 1)
         self.assertEqual(mock_client.models.generate_content.call_count, 3)
 
+        first_call_config = mock_client.models.generate_content.call_args_list[0].kwargs[
+            "config"
+        ]
+        self.assertTrue(first_call_config.automatic_function_calling.disable)
+        self.assertEqual(first_call_config.http_options.timeout, 45)
+        self.assertEqual(first_call_config.http_options.retry_options.attempts, 2)
+
         final_call_config = mock_client.models.generate_content.call_args_list[2].kwargs[
             "config"
         ]
@@ -109,6 +116,30 @@ class TestRunAgentReliability(unittest.TestCase):
             "Second identical tool call should be served from cache.",
         )
         self.assertEqual(mock_client.models.generate_content.call_count, 3)
+
+    @patch("gramps_webapi.api.llm.agent.genai.Client")
+    def test_request_timeout_and_retry_options_are_configurable(self, mock_client_ctor):
+        """Agent should apply configured per-call timeout and retry attempts."""
+        final_answer = _text_response("Done")
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = final_answer
+        mock_client_ctor.return_value = mock_client
+
+        response = run_agent(
+            prompt="Simple prompt",
+            deps=self.deps,
+            model_name="gemini-3-flash-preview",
+            grounding_enabled=False,
+            request_timeout_seconds=12,
+            request_retry_attempts=1,
+        )
+
+        self.assertIs(response, final_answer)
+        first_call_config = mock_client.models.generate_content.call_args_list[0].kwargs[
+            "config"
+        ]
+        self.assertEqual(first_call_config.http_options.timeout, 12)
+        self.assertEqual(first_call_config.http_options.retry_options.attempts, 1)
 
 
 if __name__ == "__main__":
