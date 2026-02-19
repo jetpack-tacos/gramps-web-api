@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Any
 
 from google import genai
@@ -183,18 +182,6 @@ def _prompt_requires_tree_verification(prompt: str) -> bool:
     """Heuristic for prompts that should be validated against tree data."""
     lower = prompt.lower()
     return any(keyword in lower for keyword in _TREE_VERIFICATION_KEYWORDS)
-
-
-def _response_contains_tree_evidence(response: types.GenerateContentResponse) -> bool:
-    """Return True if response text contains Gramps IDs or object links."""
-    if not response.candidates or not response.candidates[0].content.parts:
-        return False
-    text = "".join(part.text or "" for part in response.candidates[0].content.parts)
-    if not text:
-        return False
-    if re.search(r"/(person|family|event|place|source|citation|repository|note|media)/[A-Z]\d+", text):
-        return True
-    return bool(re.search(r"\b[A-Z]\d{3,}\b", text))
 
 
 def _make_tool_wrappers(deps: AgentDeps) -> list[types.FunctionDeclaration]:
@@ -808,6 +795,9 @@ def run_agent(
     repeated_signature_rounds = 0
     tool_result_cache: dict[str, str] = {}
     last_model_error: Exception | None = None
+    requires_tree_verification = (
+        not grounding_enabled and _prompt_requires_tree_verification(prompt)
+    )
 
     max_iterations = max(1, max_iterations)
     max_repeated_function_calls = max(1, max_repeated_function_calls)
@@ -856,12 +846,7 @@ def run_agent(
         )
 
         if not has_function_call:
-            if (
-                not grounding_enabled
-                and not force_verification_prompt_sent
-                and _prompt_requires_tree_verification(prompt)
-                and not _response_contains_tree_evidence(response)
-            ):
+            if requires_tree_verification and not force_verification_prompt_sent:
                 # The model answered without touching tree tools; force one
                 # verification pass so tree-specific claims are grounded.
                 force_verification_prompt_sent = True
@@ -873,14 +858,48 @@ def run_agent(
                             types.Part.from_text(
                                 text=(
                                     "Before finalizing, verify this answer against the "
-                                    "family tree by calling relevant tools. Then provide "
-                                    "a corrected answer with person or record links."
+                                    "family tree by calling relevant tools. You must call "
+                                    "relevant tools before finalizing. Then provide a "
+                                    "corrected answer with person or record links."
                                 )
                             )
                         ],
                     )
                 )
                 continue
+            if requires_tree_verification and force_verification_prompt_sent:
+                # If the model still refuses to call tools after an explicit
+                # verification instruction, inject a deterministic tree lookup
+                # and force a final synthesis from verified data.
+                verification_result = ""
+                try:
+                    verification_result = execute_tool_call(
+                        "search_genealogy_database",
+                        {"query": prompt, "max_results": 20},
+                        deps,
+                    )
+                except Exception:
+                    verification_result = ""
+
+                if verification_result and verification_result.strip():
+                    contents.append(response.candidates[0].content)
+                    contents.append(
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part.from_text(
+                                    text=(
+                                        "Verification lookup from the family tree:\n"
+                                        f"{verification_result}\n\n"
+                                        "Use only this verified tree data to answer now. "
+                                        "Include person or record links when available."
+                                    )
+                                )
+                            ],
+                        )
+                    )
+                    forced_synthesis = True
+                    break
             break
 
         signatures: list[str] = []

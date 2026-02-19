@@ -148,7 +148,9 @@ class TestRunAgentReliability(unittest.TestCase):
     ):
         """Tree-specific answers without tool calls should trigger a verification pass."""
         mock_execute_tool_call.return_value = "verified-tool-result"
-        first_unverified = _text_response("No, that person is not in your tree.")
+        first_unverified = _text_response(
+            "No, that person is not in your tree. See [Thomas Francis Clarke Sr.](/person/I501731)."
+        )
         verification_call = _function_call_response(
             "search_genealogy_database", {"query": "Mayflower pilot", "max_results": 20}
         )
@@ -180,6 +182,49 @@ class TestRunAgentReliability(unittest.TestCase):
             "verify this answer against the family tree",
             second_call_contents[-1].parts[0].text.lower(),
         )
+        self.assertIn(
+            "must call relevant tools before finalizing",
+            second_call_contents[-1].parts[0].text.lower(),
+        )
+
+    @patch("gramps_webapi.api.llm.agent.execute_tool_call")
+    @patch("gramps_webapi.api.llm.agent.genai.Client")
+    def test_tree_specific_second_no_tool_response_uses_lookup_fallback(
+        self, mock_client_ctor, mock_execute_tool_call
+    ):
+        """If verification is ignored twice, inject deterministic lookup and force synthesis."""
+        mock_execute_tool_call.return_value = (
+            "Found records:\n[William Bradford](/person/I0573)"
+        )
+        first_unverified = _text_response("No, not in the tree.")
+        second_unverified = _text_response("Still not in the tree.")
+        final_answer = _text_response("Corrected answer with verified links.")
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = [
+            first_unverified,
+            second_unverified,
+            final_answer,
+        ]
+        mock_client_ctor.return_value = mock_client
+
+        response = run_agent(
+            prompt="Does this include the Mayflower's pilot in our database?",
+            deps=self.deps,
+            model_name="gemini-3-flash-preview",
+            grounding_enabled=False,
+        )
+
+        self.assertIs(response, final_answer)
+        self.assertEqual(mock_execute_tool_call.call_count, 1)
+        self.assertEqual(mock_client.models.generate_content.call_count, 3)
+
+        synthesis_call_contents = mock_client.models.generate_content.call_args_list[2].kwargs[
+            "contents"
+        ]
+        synthesis_prompt = synthesis_call_contents[-1].parts[0].text
+        self.assertIn("verification lookup from the family tree", synthesis_prompt.lower())
+        self.assertIn("/person/I0573", synthesis_prompt)
 
     @patch("gramps_webapi.api.llm.agent.execute_tool_call")
     @patch("gramps_webapi.api.llm.agent.genai.Client")
