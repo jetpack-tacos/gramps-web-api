@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from flask_jwt_extended import get_jwt_identity
+from sqlalchemy import func
 from webargs import fields
 
 from ..util import (
@@ -47,26 +48,50 @@ class ConversationsResource(ProtectedResource):
             .all()
         )
 
+        if not conversations:
+            return [], 200
+
+        conv_ids = [c.id for c in conversations]
+
+        # Single query for all message counts
+        counts = dict(
+            user_db.session.query(Message.conversation_id, func.count(Message.id))
+            .filter(Message.conversation_id.in_(conv_ids))
+            .group_by(Message.conversation_id)
+            .all()
+        )
+
+        # Single query for the latest message per conversation
+        max_dates = (
+            user_db.session.query(
+                Message.conversation_id,
+                func.max(Message.created_at).label("max_date"),
+            )
+            .filter(Message.conversation_id.in_(conv_ids))
+            .group_by(Message.conversation_id)
+            .subquery()
+        )
+        last_messages = (
+            user_db.session.query(Message)
+            .join(
+                max_dates,
+                (Message.conversation_id == max_dates.c.conversation_id)
+                & (Message.created_at == max_dates.c.max_date),
+            )
+            .all()
+        )
+        last_msg_by_conv = {msg.conversation_id: msg for msg in last_messages}
+
         result = []
         for conv in conversations:
-            last_msg = (
-                user_db.session.query(Message)
-                .filter_by(conversation_id=conv.id)
-                .order_by(Message.created_at.desc())
-                .first()
-            )
-            msg_count = (
-                user_db.session.query(Message)
-                .filter_by(conversation_id=conv.id)
-                .count()
-            )
+            last_msg = last_msg_by_conv.get(conv.id)
             result.append(
                 {
                     "id": conv.id,
                     "title": conv.title,
                     "created_at": conv.created_at.isoformat() if conv.created_at else None,
                     "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
-                    "message_count": msg_count,
+                    "message_count": counts.get(conv.id, 0),
                     "last_message_preview": (
                         last_msg.content[:100] if last_msg else None
                     ),
@@ -166,10 +191,10 @@ def add_message(
     )
     user_db.session.add(msg)
 
-    # Update conversation's updated_at
-    conv = user_db.session.query(Conversation).filter_by(id=conversation_id).first()
-    if conv:
-        conv.updated_at = datetime.now(timezone.utc)
+    # Update conversation's updated_at with a direct UPDATE (no extra SELECT)
+    user_db.session.query(Conversation).filter_by(id=conversation_id).update(
+        {"updated_at": datetime.now(timezone.utc)}
+    )
 
     user_db.session.commit()
     return msg
@@ -191,7 +216,8 @@ def get_conversation_history(conversation_id: str) -> list[dict]:
 
 def auto_title(text: str) -> str:
     """Generate a title from the first user message."""
-    title = text.strip()
+    # Collapse all whitespace (newlines, tabs, etc.) to single spaces
+    title = " ".join(text.split())
     if len(title) > 60:
         title = title[:57]
         # Truncate at last word boundary

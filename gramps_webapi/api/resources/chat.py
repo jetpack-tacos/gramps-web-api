@@ -29,6 +29,7 @@ from ..util import (
     abort_with_message,
     check_quota_ai,
     update_usage_ai,
+    get_logger,
 )
 from ..tasks import AsyncResult, make_task_response, process_chat, run_task
 from . import ProtectedResource
@@ -99,11 +100,8 @@ class ChatResource(ProtectedResource):
         except ValueError as e:
             abort_with_message(422, f"Invalid message format: {str(e)}")
         except Exception as e:
-            # Log the full error for debugging
-            import logging
-            logging.error(f"Error in chat processing: {str(e)}", exc_info=True)
-            # Return detailed error to client
-            abort_with_message(500, f"Chat processing error: {str(e)}")
+            get_logger().error("Error in chat processing: %s", e, exc_info=True)
+            abort_with_message(500, "An error occurred processing your request")
 
         update_usage_ai(new=1)
         return result

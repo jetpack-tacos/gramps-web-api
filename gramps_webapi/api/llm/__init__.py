@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import os
+import random
 import re
 from typing import Any
 
 from flask import current_app
-from google import genai
 from google.genai import types
+from gramps.gen.lib.date import gregorian
 
-from ..util import abort_with_message, get_logger
-from .agent import run_agent, _ToolContext
+from ..util import abort_with_message, get_db_outside_request, get_logger
+from .agent import run_agent, _ToolContext, get_gemini_client
 from .deps import AgentDeps
 from .tools import (
     get_tree_statistics,
@@ -283,9 +283,7 @@ def answer_with_agent(
             request_retry_attempts=int(request_retry_attempts),
         )
         response_text = extract_text_from_response(response)
-        logger.info("Gemini response (%d chars): %s", len(response_text), response_text[:500])
-        if len(response_text) > 500:
-            logger.info("Full Gemini response: %s", response_text)
+        logger.debug("Gemini response (%d chars)", len(response_text))
         return response
     except ValueError as e:
         logger.error("Gemini configuration error: %s", e)
@@ -320,11 +318,7 @@ def generate_insight(
     if not model_name:
         raise ValueError("No LLM model specified")
 
-    api_key = os.environ.get("GEMINI_API_KEY") or config.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("No Gemini API key configured")
-
-    client = genai.Client(api_key=api_key)
+    client = get_gemini_client()
 
     try:
         logger.debug(
@@ -381,17 +375,13 @@ def generate_person_connections(
     if not model_name:
         raise ValueError("No LLM model specified")
 
-    api_key = os.environ.get("GEMINI_API_KEY") or config.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("No Gemini API key configured")
-
     context = (
         f"VIEWED PERSON: {person_gramps_id}\n\n"
         "SCOPED FINDINGS (already filtered to this person/immediate family):\n"
         f"{findings_text}"
     )
 
-    client = genai.Client(api_key=api_key)
+    client = get_gemini_client()
 
     try:
         logger.debug(
@@ -482,10 +472,6 @@ def generate_nuggets(
     if not model_name:
         raise ValueError("No LLM model specified")
 
-    api_key = os.environ.get("GEMINI_API_KEY") or config.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("No Gemini API key configured")
-
     # Pre-gather tree context by calling tools directly (no agent loop)
     deps = AgentDeps(
         tree=tree,
@@ -504,7 +490,7 @@ def generate_nuggets(
 
     context = f"TREE STATISTICS:\n{stats_text}\n\nINTERESTING PATTERNS AND COINCIDENCES:\n{clusters_text}"
 
-    client = genai.Client(api_key=api_key)
+    client = get_gemini_client()
 
     try:
         logger.info("Sending single-shot nugget generation request to Gemini...")
@@ -605,10 +591,6 @@ def generate_blog_post(
     if not model_name:
         raise ValueError("No LLM model specified")
 
-    api_key = os.environ.get("GEMINI_API_KEY") or config.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("No Gemini API key configured")
-
     # Pre-gather tree context by calling tools directly
     deps = AgentDeps(
         tree=tree,
@@ -617,9 +599,6 @@ def generate_blog_post(
         user_id=user_id,
     )
     ctx = _ToolContext(deps)
-
-    import re as _re
-    import random
 
     logger.info("Gathering context for blog post generation...")
 
@@ -645,8 +624,8 @@ def generate_blog_post(
     # Score findings: prefer those mentioning unfeatured people or events
     def finding_score(finding):
         ids_in_finding = set(
-            _re.findall(r'\b(I\d+)\b', finding)
-            + _re.findall(r'/person/(I\d+)', finding)
+            re.findall(r'\b(I\d+)\b', finding)
+            + re.findall(r'/person/(I\d+)', finding)
         )
         # Penalize findings where all people are already featured
         if ids_in_finding and ids_in_finding.issubset(featured):
@@ -672,8 +651,8 @@ def generate_blog_post(
     selected_text = "\n\n".join(selected_findings)
     # Match both bare IDs (I0001) and markdown links (/person/I0001)
     gramps_ids = list(set(
-        _re.findall(r'\b(I\d+)\b', selected_text)
-        + _re.findall(r'/person/(I\d+)', selected_text)
+        re.findall(r'\b(I\d+)\b', selected_text)
+        + re.findall(r'/person/(I\d+)', selected_text)
     ))
     random.shuffle(gramps_ids)
 
@@ -703,7 +682,7 @@ def generate_blog_post(
         "Weave in the person details and historical context to bring the story to life."
     )
 
-    client = genai.Client(api_key=api_key)
+    client = get_gemini_client()
 
     try:
         logger.info("Sending blog generation request to Gemini (with Google Search)...")
@@ -808,10 +787,6 @@ def generate_this_day(
     if not model_name:
         raise ValueError("No LLM model specified")
 
-    api_key = os.environ.get("GEMINI_API_KEY") or config.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("No Gemini API key configured")
-
     # Pre-gather events matching this month/day
     deps = AgentDeps(
         tree=tree,
@@ -819,9 +794,6 @@ def generate_this_day(
         max_context_length=config.get("LLM_MAX_CONTEXT_LENGTH", 50000),
         user_id=user_id,
     )
-
-    from ..util import get_db_outside_request
-    from gramps.gen.lib.date import gregorian
 
     db_handle = None
     try:
@@ -925,7 +897,7 @@ def generate_this_day(
         context = "\n".join(context_parts)
         logger.info("Context for Gemini (%d chars): %s", len(context), context[:300])
 
-        client = genai.Client(api_key=api_key)
+        client = get_gemini_client()
 
         response = client.models.generate_content(
             model=model_name,

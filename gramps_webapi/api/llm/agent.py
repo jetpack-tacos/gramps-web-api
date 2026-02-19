@@ -50,6 +50,21 @@ from .tools import (
 )
 
 
+# Module-level Gemini client (one per worker process — avoids re-auth overhead per request)
+_gemini_client: genai.Client | None = None
+
+
+def get_gemini_client() -> genai.Client:
+    """Return a lazily initialized, per-process Gemini client."""
+    global _gemini_client
+    if _gemini_client is None:
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY environment variable is not set")
+        _gemini_client = genai.Client(api_key=api_key)
+    return _gemini_client
+
+
 SYSTEM_PROMPT = """You are a witty, curious family history assistant who genuinely enjoys digging through genealogy records. Think of yourself as the friend who falls down Wikipedia rabbit holes and comes back with amazing stories.
 
 YOUR VOICE:
@@ -763,11 +778,7 @@ def run_agent(
     Returns:
         The final GenerateContentResponse from Gemini
     """
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY environment variable is not set")
-
-    client = genai.Client(api_key=api_key)
+    client = get_gemini_client()
 
     system_prompt = system_prompt_override or SYSTEM_PROMPT
     tool_declarations = _make_tool_wrappers(deps)
