@@ -111,7 +111,17 @@ def _is_mock_object(value: Any) -> bool:
 def _extract_web_search_queries(
     response: types.GenerateContentResponse,
 ) -> list[str]:
-    """Extract Google Search queries from Gemini grounding metadata."""
+    """Extract web search queries from Gemini grounding metadata or custom tool calls.
+
+    Checks for our custom web_search tool count first (set by run_agent() when the
+    model calls our function_declaration wrapper), then falls back to native Gemini
+    grounding metadata (populated only when google_search= is used in the Tool object).
+    """
+    # Custom web_search tool count injected by run_agent()
+    custom_count = getattr(response, "_tool_web_search_count", 0)
+    if custom_count > 0:
+        return [f"web_search_tool_call_{i + 1}" for i in range(custom_count)]
+
     if not response.candidates:
         return []
 

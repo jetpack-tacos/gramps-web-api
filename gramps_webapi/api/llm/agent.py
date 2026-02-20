@@ -28,7 +28,6 @@ from typing import Any
 
 from google import genai
 from google.genai import types
-from google.genai.types import GoogleSearch
 
 from .deps import AgentDeps
 from .tools import (
@@ -48,6 +47,7 @@ from .tools import (
     get_tree_statistics,
     search_genealogy_database,
     update_person_field,
+    web_search,
 )
 
 
@@ -104,7 +104,7 @@ For migration questions, use analyze_migration_patterns to find movement pattern
 
 TOOL CHAINING STRATEGY
 
-For narrative questions about specific people: use get_person_full_details to get comprehensive details, then search_genealogy_database or filter_people to find related people, then Google Search for historical context.
+For narrative questions about specific people: use get_person_full_details to get comprehensive details, then search_genealogy_database or filter_people to find related people, then web_search for historical context.
 
 For "tell me about [person]" requests: pull all available data and weave it into a readable narrative, not just a list of facts. Include historical context when dates/places are known.
 
@@ -117,11 +117,13 @@ For data quality awareness: when presenting information, note when sources are m
 
 WEB RESEARCH GUIDELINES
 
-When the user asks about historical context, living conditions, occupations, immigration patterns, or "what was life like" questions, use Google Search to find relevant historical information.
+You have access to a web_search tool for retrieving current information from the internet. Use it when the user asks about recent events, people who may appear in news articles or obituaries, historical context about places or time periods, or any information that might post-date your training knowledge. Call it with a focused, specific search query.
+
+When the user asks about historical context, living conditions, occupations, immigration patterns, or "what was life like" questions, use web_search to find relevant historical information.
 
 Always combine database facts with historical context when both are relevant.
 
-When you find migration patterns in the tree (people moving from one place to another), proactively search for historical events that might explain why: wars, famines, economic booms, immigration laws, land grants, gold rushes, religious persecution, etc. This is one of the most valuable things you can do.
+When you find migration patterns in the tree (people moving from one place to another), proactively use web_search to find historical events that might explain why: wars, famines, economic booms, immigration laws, land grants, gold rushes, religious persecution, etc. This is one of the most valuable things you can do.
 
 When citing web sources, include them as links at the end of your response in a "Sources:" section.
 
@@ -743,6 +745,8 @@ def execute_tool_call(
         return analyze_naming_patterns(ctx, **tool_args)
     elif tool_name == "get_occupation_summary":
         return get_occupation_summary(ctx, **tool_args)
+    elif tool_name == "web_search":
+        return web_search(ctx, **tool_args)
     else:
         return f"Unknown tool: {tool_name}"
 
@@ -839,13 +843,30 @@ def run_agent(
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
     base_contents_len = len(contents)
 
+    web_search_declaration = types.FunctionDeclaration(
+        name="web_search",
+        description=(
+            "Search the web for current information not available in the family tree. "
+            "Use for: recent events, people in news or obituaries, historical context about "
+            "places or time periods, anything that may post-date your training knowledge cutoff."
+        ),
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "query": types.Schema(
+                    type=types.Type.STRING,
+                    description="A focused, specific search query",
+                )
+            },
+            required=["query"],
+        ),
+    )
+
     if grounding_enabled:
-        tool_config = types.Tool(
-            function_declarations=tool_declarations,
-            google_search=GoogleSearch(),
-        )
+        all_declarations = list(tool_declarations) + [web_search_declaration]
     else:
-        tool_config = types.Tool(function_declarations=tool_declarations)
+        all_declarations = list(tool_declarations)
+    tool_config = types.Tool(function_declarations=all_declarations)
 
     iteration = 0
     has_function_call = False
@@ -1059,5 +1080,18 @@ def run_agent(
                 rehydrated = _rehydrate_links(raw_text, collected_links)
                 if rehydrated != raw_text:
                     rehydrated_text = rehydrated
+
+    # Count how many times the custom web_search tool was called and attach to the
+    # response object so extract_grounding_stats_from_result() can report it correctly.
+    # (Native Gemini grounding metadata only populates for google_search= in the Tool
+    # object, not for our custom function_declaration wrapper.)
+    web_search_call_count = sum(
+        1 for key in tool_result_cache if key.startswith("web_search:")
+    )
+    if web_search_call_count > 0:
+        try:
+            response._tool_web_search_count = web_search_call_count
+        except AttributeError:
+            pass
 
     return response, rehydrated_text

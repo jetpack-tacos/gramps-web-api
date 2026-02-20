@@ -22,9 +22,13 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from functools import wraps
 from typing import Any, Protocol, TypeVar
+
+from google import genai
+from google.genai import types
 
 T = TypeVar("T")
 
@@ -2218,3 +2222,35 @@ def get_occupation_summary(
             except:  # pylint: disable=bare-except
                 pass
         return f"Error analyzing occupations: {str(e)}"
+
+
+def web_search(ctx: RunContext[AgentDeps], query: str) -> str:
+    """Search the web for current information not available in the family tree.
+
+    Use for: recent events, people in news or obituaries, historical context about
+    places or time periods, anything that may post-date your training knowledge cutoff.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    model_name = os.environ.get("GRAMPSWEB_LLM_MODEL", "gemini-3-flash-preview")
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model_name,
+        contents=query,
+        config=types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+            # CRITICAL: NO function_declarations here — that is the entire fix.
+            # Gemini 2.0+ silently drops google_search when function_declarations
+            # is also present in the same Tool object.
+        ),
+    )
+    text = response.text or ""
+    sources = []
+    if response.candidates and response.candidates[0].grounding_metadata:
+        for chunk in (response.candidates[0].grounding_metadata.grounding_chunks or []):
+            if chunk.web and chunk.web.uri:
+                sources.append(
+                    f"- [{chunk.web.title or chunk.web.uri}]({chunk.web.uri})"
+                )
+    if sources:
+        text += "\n\nSources:\n" + "\n".join(sources)
+    return text
