@@ -432,7 +432,7 @@ These nuggets should make someone stop scrolling. Think "fun facts" at the botto
 RULES:
 - Base nuggets ONLY on the data provided. Do NOT fabricate names, dates, or facts.
 - Include the Gramps ID of the most relevant person in [brackets] at the end.
-- If a finding doesn't have a clear person ID, use [TREE] instead.
+- PREFER person IDs from the DETAILED PERSON RECORDS provided. Use [TREE] ONLY when a nugget is about a whole-tree pattern with absolutely no specific named person to link to.
 - Number each nugget 1-30.
 
 GOOD NUGGETS:
@@ -498,7 +498,27 @@ def generate_nuggets(
     clusters_text = find_coincidences_and_clusters(ctx, category="all", max_results=15, person_subset=person_subset)
     logger.info("Coincidences/clusters gathered (%d chars)", len(clusters_text))
 
-    context = f"TREE STATISTICS:\n{stats_text}\n\nINTERESTING PATTERNS AND COINCIDENCES:\n{clusters_text}"
+    # Enrich context with person details for IDs mentioned in cluster findings.
+    # This gives Gemini real names/dates/places to anchor nuggets to specific people
+    # instead of falling back to [TREE] for every aggregate finding.
+    gramps_ids = list(set(
+        re.findall(r'\b(I\d+)\b', clusters_text)
+        + re.findall(r'/person/(I\d+)', clusters_text)
+    ))
+    random.shuffle(gramps_ids)
+    person_details = []
+    for gid in gramps_ids[:8]:
+        details = get_person_full_details(ctx, gramps_id=gid)
+        if details and "Error" not in details and "private" not in details.lower():
+            person_details.append(f"--- PERSON {gid} ---\n{details}")
+    logger.info("Gathered details for %d people from cluster findings", len(person_details))
+
+    context = (
+        f"TREE STATISTICS:\n{stats_text}\n\n"
+        f"INTERESTING PATTERNS AND COINCIDENCES:\n{clusters_text}"
+    )
+    if person_details:
+        context += "\n\nDETAILED PERSON RECORDS (use these IDs in your nuggets):\n" + "\n\n".join(person_details)
 
     client = get_gemini_client()
 

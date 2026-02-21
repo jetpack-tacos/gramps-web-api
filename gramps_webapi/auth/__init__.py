@@ -756,6 +756,40 @@ class ThisDayCache(user_db.Model):  # type: ignore
     )
 
 
+class UnexploredBranchesCache(user_db.Model):  # type: ignore
+    """Cached 'Unexplored Branches' research suggestions per user."""
+
+    __tablename__ = "unexplored_branches_cache"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    tree = mapped_column(sa.String, nullable=False)
+    user_id = mapped_column(sa.String, nullable=False)
+    home_person_id = mapped_column(sa.String, nullable=True)  # gramps_id at gen time
+    content = mapped_column(sa.Text, nullable=False)
+    dead_ends_json = mapped_column(sa.Text, nullable=False, server_default="[]")
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.Index("idx_unexplored_tree_user", "tree", "user_id"),
+    )
+
+
+class TimelineCache(user_db.Model):  # type: ignore
+    """Cached 'Family Timeline' narrative per tree."""
+
+    __tablename__ = "timeline_cache"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    tree = mapped_column(sa.String, nullable=False, unique=True)
+    content = mapped_column(sa.Text, nullable=False)
+    title = mapped_column(sa.String, nullable=True)
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+
+
 class SearchGroundingUsageMonthly(user_db.Model):  # type: ignore
     """Monthly usage counters for web grounding."""
 
